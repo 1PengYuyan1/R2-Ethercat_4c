@@ -14,31 +14,30 @@ PC 通过一张普通以太网卡跑 EtherCAT,经由 LinkX-4C 把 4 路经典 CA
 ```
 Ethercat-R2/
 ├── README.md
-└── ros2_ws/
-    ├── start_upper_computer.sh         # 一键启动脚本(joy + remote + relay + 主控)
-    └── src/
-        ├── linkx_bringup/              # launch / 参数包
-        │   ├── launch/
-        │   │   ├── full_system.launch.py   # 完整系统(默认入口)
-        │   │   └── teleop.launch.py        # 仅遥控数据通路(无主控)
-        │   └── config/
-        │       ├── teleop.params.yaml
-        │       └── fastrtps_profiles.xml
-        └── linkx_soem_demo/            # 主控 + 工具集 + ROS 桥
-            ├── src/
-            │   ├── vehicle_control/    # 整车主控可执行
-            │   │   ├── main.cpp
-            │   │   ├── middleware/     # 1) SOEM / LinkX / Algorithm (PID, ramp)
-            │   │   ├── device/         # 2) Motor / Buzzer / Suction / OPS / ecat_manager / linkx4c_handler / rt_timing
-            │   │   ├── chariot/        # 3) chassis / gantry / arm / navigation
-            │   │   ├── interaction/    # 4) robot
-            │   │   └── task/           # 5) task 顶层调度
-            │   ├── remote/             # 手柄解算 + 串口/话题转发
-            │   │   ├── ros2/           # remote_node / stm32_node / joystick_mapper
-            │   │   └── device/Remote/  # F710 手柄驱动
-            │   └── test_mains/         # 独立工具(标定 / 调参 / 链路测试)
-            ├── include/
-            └── CMakeLists.txt
+├── start_upper_computer.sh             # 一键启动脚本(joy + remote + relay + 主控)
+└── src/
+    ├── linkx_bringup/                  # launch / 参数包
+    │   ├── launch/
+    │   │   ├── full_system.launch.py   # 完整系统(默认入口)
+    │   │   └── teleop.launch.py        # 仅遥控数据通路(无主控)
+    │   └── config/
+    │       ├── teleop.params.yaml
+    │       └── fastrtps_profiles.xml
+    └── linkx_soem_demo/                # 主控 + 工具集 + ROS 桥
+        ├── src/
+        │   ├── vehicle_control/        # 整车主控可执行
+        │   │   ├── main.cpp
+        │   │   ├── middleware/         # 1) SOEM / LinkX / Algorithm (PID, ramp)
+        │   │   ├── device/             # 2) Motor / Buzzer / Suction / OPS / ecat_manager / linkx4c_handler / rt_timing
+        │   │   ├── chariot/            # 3) chassis / gantry / arm / navigation
+        │   │   ├── interaction/        # 4) robot
+        │   │   └── task/               # 5) task 顶层调度
+        │   ├── remote/                 # 手柄解算 + 串口/话题转发
+        │   │   ├── ros2/               # remote_node / stm32_node / joystick_mapper
+        │   │   └── device/Remote/      # F710 手柄驱动
+        │   └── test_mains/             # 独立工具(标定 / 调参 / 链路测试)
+        ├── include/
+        └── CMakeLists.txt
 ```
 
 主控源码遵循 `1_Middleware → 2_Device → 3_Chariot → 4_Interaction → 5_Task` 五层分层(命名沿用 R1 框架)。
@@ -58,7 +57,6 @@ Ethercat-R2/
 ## 构建
 
 ```bash
-cd ros2_ws
 source /opt/ros/humble/setup.bash
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
@@ -70,7 +68,7 @@ source install/setup.bash
 
 ## 网卡权限
 
-SOEM 需要 raw 以太网权限,二选一(均假设当前目录在 `ros2_ws/`):
+SOEM 需要 raw 以太网权限,二选一:
 
 ```bash
 # 方案 A:每次 sudo(默认脚本走这条)
@@ -89,8 +87,6 @@ sudo setcap cap_net_raw,cap_net_admin+ep \
 ### 一键脚本
 
 ```bash
-cd ros2_ws
-
 # 默认:网卡 enp86s0,sudo 启动,max_speed=1.5
 ./start_upper_computer.sh
 
