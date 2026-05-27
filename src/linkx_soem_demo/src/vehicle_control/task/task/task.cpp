@@ -193,22 +193,8 @@ static void Print_Live_Dashboard()
                        robot.Chassis.Get_Now_Velocity_Y(),
                        robot.Chassis.Get_Now_Omega());
 
-    // 4 个舵向 DM6225
-    n += std::snprintf(buf + n, kBufSize - n, "\n[STEER-DM6225]\n");
-    for (int i = 0; i < kChannelCount && n < (int)kBufSize - 256; ++i)
-    {
-        auto &dm = robot.Chassis.Motor_Steer[i];
-        n += std::snprintf(buf + n, kBufSize - n,
-                           "  S%d tx=0x%02X rx=0x%02X rad=%+7.3f omega=%+7.3f"
-                           " torque=%+5.2f T_mos=%3.0f T_rot=%3.0f status=%d\n",
-                           i, (unsigned)dm.DM_CAN_Tx_ID, (unsigned)dm.DM_CAN_Rx_ID,
-                           dm.Get_Now_Radian(), dm.Get_Now_Omega(), dm.Get_Now_Torque(),
-                           dm.Get_Now_MOS_Temperature(), dm.Get_Now_Rotor_Temperature(),
-                           (int)dm.Get_Status());
-    }
-
-    // 4 个轮向 DM3519
-    n += std::snprintf(buf + n, kBufSize - n, "\n[WHEEL-DM3519]\n");
+    // 4 个轮向 DM3519（全向轮）
+    n += std::snprintf(buf + n, kBufSize - n, "\n[OMNI-WHEEL-DM3519]\n");
     for (int i = 0; i < kChannelCount && n < (int)kBufSize - 256; ++i)
     {
         auto &dm = robot.Chassis.Motor_Wheel[i];
@@ -359,7 +345,6 @@ static void Disable_All_Devices()
 
         for (int i = 0; i < kChannelCount; ++i)
         {
-            robot.Chassis.Motor_Steer[i].CAN_Send_Exit();
             robot.Chassis.Motor_Wheel[i].CAN_Send_Exit();
         }
         robot.Gantry.Motor_Lift_Left.CAN_Send_Exit();
@@ -367,7 +352,7 @@ static void Disable_All_Devices()
         robot.Arm.Arm.CAN_Send_Exit();
 
         // 软件级状态字也置 DISABLE，防止 1ms 回调再次入队 MIT 帧
-        robot.Chassis.Set_Chassis_Control_Type(Chassis_Control_Type_DISABLE);
+        robot.Chassis.Set_Chassis_Control_Type(Chassis_Omni_Control_Type_DISABLE);
         robot.Gantry.Set_Gantry_Control_Type(GANTRY_CONTROL_DISABLE);
         robot.Arm.Set_Arm_Control_Type(ARM_CONTROL_DISABLE);
 

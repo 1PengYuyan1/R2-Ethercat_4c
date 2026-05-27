@@ -1,14 +1,12 @@
 // =============================================================================
-// robot_test_main.cpp (R2 版)
+// robot_test_main.cpp (R2 全向轮版)
 //
 // Class_Robot 接口的真实上机回归测试（顺序自动）。
-// 参考 R1 robot_test 的测试框架，按 R2 实际硬件改写：
-//   - 无 BRT 编码器/无 ODrive/无 Clamp
-//   - 新增 Gantry 双 DM 升降、Arm 单 DM 机械臂、Suction 真空
+// 适配全向轮工况：ch0 上 4× DM3519 轮向，不再有舵向 DM6225。
 //
 // 测试覆盖：
-//   T1  Init 完整性                —— DM 舵向 / DM 轮向 / Gantry / Arm 全部 ENABLE
-//   T2  EtherCAT/CAN 接收链路        —— DM 反馈帧持续到达（status 持续翻新）
+//   T1  Init 完整性                —— 4× DM3519 轮向 / Gantry / Arm 全部 ENABLE
+//   T2  EtherCAT/CAN 接收链路        —— DM 反馈帧持续到达（omega 持续翻新）
 //   T3  TIM 周期回调存活             —— bg 线程 1ms/2ms/100ms 跑 1s 不崩
 //   T4  ROS 桥接订阅                —— /chassis/cmd_vel 注入 → 200ms 内底盘 ENABLE
 //   T5  限速短转 (0.05 m/s × 2s)     —— Chassis Self_Resolution 跟得上
@@ -139,13 +137,11 @@ private:
 static void T1_Init_Completeness()
 {
     Section("T1: Init 完整性 — 所有 DM 子设备应 ENABLE");
-    bool all_steer_ok = true, all_wheel_ok = true;
-    for (int i = 0; i < STEER_NUM; ++i)
+    bool all_wheel_ok = true;
+    for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
     {
-        if (robot.Chassis.Motor_Steer[i].Get_Status() != Motor_DM_Status_ENABLE) all_steer_ok = false;
         if (robot.Chassis.Motor_Wheel[i].Get_Status() != Motor_DM_Status_ENABLE) all_wheel_ok = false;
     }
-    Record("4× 舵向 DM6225 已使能", all_steer_ok);
     Record("4× 轮向 DM3519 已使能", all_wheel_ok);
 
     const bool gl = robot.Gantry.Motor_Lift_Left .Get_Status() == Motor_DM_Status_ENABLE;
@@ -157,19 +153,17 @@ static void T1_Init_Completeness()
 static void T2_CAN_Link_Alive()
 {
     Section("T2: EtherCAT/CAN 接收链路 — DM 反馈持续达");
-    // 抓两次 DM 反馈，比较是否变化（角度或 omega 在小波动）
-    float steer_rad_a[STEER_NUM]; float wheel_omega_a[STEER_NUM];
-    for (int i = 0; i < STEER_NUM; ++i)
+    // 抓两次 DM 反馈，比较是否变化（omega 在小波动）
+    float wheel_omega_a[OMNI_WHEEL_NUM];
+    for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
     {
-        steer_rad_a[i]    = robot.Chassis.Motor_Steer[i].Get_Now_Radian();
-        wheel_omega_a[i]  = robot.Chassis.Motor_Wheel[i].Get_Now_Omega();
+        wheel_omega_a[i] = robot.Chassis.Motor_Wheel[i].Get_Now_Omega();
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     bool any_change = false;
-    for (int i = 0; i < STEER_NUM && !any_change; ++i)
+    for (int i = 0; i < OMNI_WHEEL_NUM && !any_change; ++i)
     {
-        if (std::fabs(robot.Chassis.Motor_Steer[i].Get_Now_Radian() - steer_rad_a[i]) > 1e-6f) any_change = true;
-        if (std::fabs(robot.Chassis.Motor_Wheel[i].Get_Now_Omega()  - wheel_omega_a[i]) > 1e-6f) any_change = true;
+        if (std::fabs(robot.Chassis.Motor_Wheel[i].Get_Now_Omega() - wheel_omega_a[i]) > 1e-6f) any_change = true;
     }
     Record("DM 反馈帧持续到达（500ms 内有更新）", any_change);
 }
@@ -198,7 +192,7 @@ static void T4_ROS_Twist_Injection(Test_Injector &inj)
         inj.Publish_Twist(0.0f, 0.0f, 0.0f);  // 安全起见先零速，让 chassis ENABLE 但不动
         std::this_thread::sleep_for(std::chrono::milliseconds(30));
     }
-    const bool enabled = (robot.Chassis.Get_Chassis_Control_Type() == Chassis_Control_Type_ENABLE);
+    const bool enabled = (robot.Chassis.Get_Chassis_Control_Type() == Chassis_Omni_Control_Type_ENABLE);
     Record("Chassis Control_Type=ENABLE", enabled);
 }
 
@@ -272,7 +266,7 @@ static void T8_Disable_Cycle(Test_Injector &inj)
     Section("T8: Disable 周期 — gantry_state=0xFF 后底盘超时");
     // 故意停发 cmd_vel 超过 200ms，触发 chassis timeout
     std::this_thread::sleep_for(std::chrono::milliseconds(400));
-    const bool disabled = (robot.Chassis.Get_Chassis_Control_Type() == Chassis_Control_Type_DISABLE);
+    const bool disabled = (robot.Chassis.Get_Chassis_Control_Type() == Chassis_Omni_Control_Type_DISABLE);
     Record("Chassis 超时后自动 DISABLE", disabled);
 }
 

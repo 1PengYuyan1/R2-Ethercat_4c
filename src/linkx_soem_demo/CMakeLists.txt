@@ -59,6 +59,8 @@ set(TEST_MAIN_INCLUDE_DIRS
     include/linkx_soem_demo/vehicle_control/2_Device/rt_timing
     include/linkx_soem_demo/vehicle_control/3_Chariot
     include/linkx_soem_demo/vehicle_control/3_Chariot/chassis
+    include/linkx_soem_demo/vehicle_control/3_Chariot/chassis/steer_wheel
+    include/linkx_soem_demo/vehicle_control/3_Chariot/chassis/omni_wheel
     include/linkx_soem_demo/vehicle_control/3_Chariot/gantry
     include/linkx_soem_demo/vehicle_control/3_Chariot/arm
     include/linkx_soem_demo/vehicle_control/3_Chariot/navigation
@@ -75,8 +77,8 @@ set(VEHICLE_CONTROL_SRC
     src/vehicle_control/task/task/task.cpp
     src/vehicle_control/interaction/robot/robot.cpp
 
-    # 3_Chariot
-    src/vehicle_control/chariot/chassis/crt_chassis.cpp
+    # 3_Chariot —— 全向轮工况
+    src/vehicle_control/chariot/chassis/omni_wheel/crt_chassis_omni.cpp
     src/vehicle_control/chariot/gantry/crt_gantry.cpp
     src/vehicle_control/chariot/arm/crt_arm.cpp
     src/vehicle_control/chariot/navigation/crt_navigation.cpp
@@ -116,6 +118,8 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     include/linkx_soem_demo/vehicle_control/2_Device/rt_timing
     include/linkx_soem_demo/vehicle_control/3_Chariot
     include/linkx_soem_demo/vehicle_control/3_Chariot/chassis
+    include/linkx_soem_demo/vehicle_control/3_Chariot/chassis/steer_wheel
+    include/linkx_soem_demo/vehicle_control/3_Chariot/chassis/omni_wheel
     include/linkx_soem_demo/vehicle_control/3_Chariot/gantry
     include/linkx_soem_demo/vehicle_control/3_Chariot/arm
     include/linkx_soem_demo/vehicle_control/3_Chariot/navigation
@@ -181,10 +185,11 @@ target_link_libraries(can_link_test pcap pthread rt m)
 
 # ============================================================================
 # 6) test_main: motor_calib —— DM6225 / DM3519 电机参数标定（friction/stiction/inertia）
+# 注：参数标定基于舵轮硬件，沿用 steer_wheel 路径
 # ============================================================================
 add_executable(motor_calib
     src/test_mains/motor_calib_main.cpp
-    src/vehicle_control/chariot/chassis/crt_chassis.cpp
+    src/vehicle_control/chariot/chassis/steer_wheel/crt_chassis.cpp
     src/vehicle_control/device/Motor/dvc_motor_dm.cpp
     src/vehicle_control/middleware/Algorithm/alg_pid.cpp
     src/vehicle_control/middleware/Algorithm/ramp.c
@@ -196,10 +201,11 @@ target_link_libraries(motor_calib pcap pthread rt m)
 
 # ============================================================================
 # 7) test_main: steer_tuning —— 舵向 PID 网格扫参（用 DM6225 内部反馈，无 BRT 编码器）
+# 注：舵向调参基于舵轮硬件，沿用 steer_wheel 路径
 # ============================================================================
 add_executable(steer_tuning
     src/test_mains/steer_tuning_main.cpp
-    src/vehicle_control/chariot/chassis/crt_chassis.cpp
+    src/vehicle_control/chariot/chassis/steer_wheel/crt_chassis.cpp
     src/vehicle_control/device/Motor/dvc_motor_dm.cpp
     src/vehicle_control/middleware/Algorithm/alg_pid.cpp
     src/vehicle_control/middleware/Algorithm/ramp.c
@@ -212,11 +218,12 @@ target_link_libraries(steer_tuning pcap pthread rt m)
 # ============================================================================
 # 8) test_main: robot_test —— 整车回归 (Chassis + Gantry + Arm + ROS 桥接)
 # 注意：不链接 task.cpp/main.cpp（避免 robot/master/linkx_dev 重定义）
+# 整车工况：全向轮，使用 omni_wheel/crt_chassis_omni.cpp
 # ============================================================================
 add_executable(robot_test
     src/test_mains/robot_test_main.cpp
     src/vehicle_control/interaction/robot/robot.cpp
-    src/vehicle_control/chariot/chassis/crt_chassis.cpp
+    src/vehicle_control/chariot/chassis/omni_wheel/crt_chassis_omni.cpp
     src/vehicle_control/chariot/gantry/crt_gantry.cpp
     src/vehicle_control/chariot/arm/crt_arm.cpp
     src/vehicle_control/chariot/navigation/crt_navigation.cpp

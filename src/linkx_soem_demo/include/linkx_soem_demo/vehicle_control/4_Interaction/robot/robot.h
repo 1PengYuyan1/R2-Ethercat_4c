@@ -6,7 +6,7 @@
 //   - ROS 接口：订阅 /chassis/cmd_vel + /chassis/gantry_state + /imu，发布 /chassis/odom_twist
 //   - 周期：每 1 ms 由 task.cpp 调用 TIM_1ms_Calculate_Callback / Loop / CAN_Rx_Callback
 
-#include "crt_chassis.h"
+#include "crt_chassis_omni.h"
 #include "crt_gantry.h"
 #include "crt_arm.h"
 #include "crt_navigation.h"
@@ -27,11 +27,11 @@
 
 class Class_Robot {
 public:
-    Class_Chassis    Chassis;
-    Class_Gantry     Gantry;
-    Class_Arm        Arm;
-    Class_Navigation Navigation;
-    Class_OPS        ops;
+    Class_Chassis_Omni Chassis;
+    Class_Gantry       Gantry;
+    Class_Arm          Arm;
+    Class_Navigation   Navigation;
+    Class_OPS          ops;
 
     void Init(linkx_t *__LinkX_Handler);
     void Loop();

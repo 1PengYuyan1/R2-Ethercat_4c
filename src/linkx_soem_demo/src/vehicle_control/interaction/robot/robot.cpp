@@ -2,6 +2,8 @@
 // 转化为底盘速度 / 龙门状态命令；通过 linkx_t 推送给 EtherCAT-CAN 桥；
 // 把 chassis 实际速度回报到 /chassis/odom_twist。
 //
+// 工况：全向轮底盘（4 × DM3519 MIT，全部布置在 LinkX channel 0）
+//
 // 调度:
 //   robot.Init(linkx) 由 task::Robot_Control_Loop 在 SOEM 主站启动后调用一次
 //   robot.CAN_Rx_Callback(ch, id, data) 由主循环 1ms 内 drain 每帧调用
@@ -36,11 +38,11 @@ void Class_Robot::Init(linkx_t *__LinkX_Handler)
 
 void Class_Robot::_Verify_Motor_ID_Uniqueness()
 {
-    // R2 CAN 通道分布：
-    //   ch0：4× DM6225 舵向（Rx 0x11-0x14）
-    //   ch1：4× DM3519 轮向（Rx 0x11-0x14，与 ch0 同 ID 段，靠通道隔离）
+    // R2 全向轮 CAN 通道分布：
+    //   ch0：4× DM3519 全向轮（Rx 0x11-0x14）
+    //   ch1：未使用（原舵向 CAN 总线，现保留以兼容硬件）
     //   ch2：2× Gantry DM + 1× Arm DM
-    // 同通道内 Rx ID 必须互不相同；跨通道允许重号（实际就是 ch0 ch1 一样）。
+    // 同通道内 Rx ID 必须互不相同。
 
     auto warn_dup = [](const char *channel_name, int a, int b, uint16_t id) {
         std::cerr << "[ROBOT][WARN] Same-channel DM CAN Rx ID collision on "
@@ -54,15 +56,12 @@ void Class_Robot::_Verify_Motor_ID_Uniqueness()
                 if (ids[i] == ids[j]) warn_dup(channel_name, i, j, ids[i]);
     };
 
-    uint16_t steer_ids[STEER_NUM];
-    uint16_t wheel_ids[STEER_NUM];
-    for (int i = 0; i < STEER_NUM; ++i)
+    uint16_t wheel_ids[OMNI_WHEEL_NUM];
+    for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
     {
-        steer_ids[i] = Chassis.Motor_Steer[i].DM_CAN_Rx_ID;
         wheel_ids[i] = Chassis.Motor_Wheel[i].DM_CAN_Rx_ID;
     }
-    check_pair("ch0 (steer)", steer_ids, STEER_NUM);
-    check_pair("ch1 (wheel)", wheel_ids, STEER_NUM);
+    check_pair("ch0 (omni wheel)", wheel_ids, OMNI_WHEEL_NUM);
 
     uint16_t ch2_ids[3] = {
         Gantry.Motor_Lift_Right.DM_CAN_Rx_ID,
@@ -192,32 +191,18 @@ void Class_Robot::_Update_Gantry_State(uint8_t state)
 
 // --- CAN 路由 --------------------------------------------------------------
 //
-// 分发策略（通道为主，ID 为辅）：
-//   - ch0 → 4× DM6225 舵向，通过 Rx_ID 区分（0x11..0x14）
-//   - ch1 → 4× DM3519 轮向，通过 Rx_ID 区分（0x11..0x14，与 ch0 同号靠通道隔离）
+// 全向轮工况分发策略：
+//   - ch0 → 4× DM3519 全向轮，通过 Rx_ID 区分（0x11..0x14）
+//   - ch1 → 未使用（原舵向通道，保留兼容硬件）
 //   - ch2 → Gantry/Arm，通过 Rx_ID 区分（0x11/0x12/0x13）
-//   - 其它通道 / 通道+ID 不匹配 → 累计到 unhandled_can_frames_，不做跨通道兜底
-//     （早期版本会把未识别帧按 ID 跨通道再分发一次，但同号的舵/轮电机会被
-//     错误注入；移除以避免控制环受污染。）
+//   - 其它通道 / 通道+ID 不匹配 → 累计到 unhandled_can_frames_
 
 void Class_Robot::CAN_Rx_Callback(uint8_t CAN_Channel, uint32_t CAN_ID, uint8_t *CAN_Data)
 {
     const uint32_t can_id_std = (CAN_ID & 0x7FFU);
 
-    auto dispatch_steer = [&]() -> bool {
-        for (int i = 0; i < STEER_NUM; ++i)
-        {
-            if (can_id_std == Chassis.Motor_Steer[i].DM_CAN_Rx_ID)
-            {
-                Chassis.Motor_Steer[i].CAN_RxCpltCallback(CAN_Data);
-                return true;
-            }
-        }
-        return false;
-    };
-
     auto dispatch_wheel = [&]() -> bool {
-        for (int i = 0; i < STEER_NUM; ++i)
+        for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
         {
             if (can_id_std == Chassis.Motor_Wheel[i].DM_CAN_Rx_ID)
             {
@@ -241,10 +226,9 @@ void Class_Robot::CAN_Rx_Callback(uint8_t CAN_Channel, uint32_t CAN_ID, uint8_t 
     bool handled = false;
     switch (CAN_Channel)
     {
-        case 0: handled = dispatch_steer();      break;
-        case 1: handled = dispatch_wheel();      break;
+        case 0: handled = dispatch_wheel();      break;
         case 2: handled = dispatch_gantry_arm(); break;
-        default: /* ch3+ 未配置任何执行器 */     break;
+        default: /* ch1/ch3 未配置任何执行器 */  break;
     }
 
     if (!handled)
@@ -266,14 +250,14 @@ void Class_Robot::_Chassis_Control()
 
     if (is_recent)
     {
-        Chassis.Set_Chassis_Control_Type(Chassis_Control_Type_ENABLE);
+        Chassis.Set_Chassis_Control_Type(Chassis_Omni_Control_Type_ENABLE);
         Chassis.Set_Target_Velocity_X(snapshot.vx);
         Chassis.Set_Target_Velocity_Y(snapshot.vy);
         Chassis.Set_Target_Omega(snapshot.omega);
     }
     else
     {
-        Chassis.Set_Chassis_Control_Type(Chassis_Control_Type_DISABLE);
+        Chassis.Set_Chassis_Control_Type(Chassis_Omni_Control_Type_DISABLE);
         Chassis.Set_Target_Velocity_X(0.0f);
         Chassis.Set_Target_Velocity_Y(0.0f);
         Chassis.Set_Target_Omega(0.0f);
