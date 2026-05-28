@@ -13,6 +13,8 @@ typedef struct {
     ecx_contextt ctx;
     uint8_t iomap[4096];
     int slave_count;
+    int expected_wkc;
+    int consecutive_wkc_errors;
     volatile bool is_running;
 } ecat_master_t;
 
@@ -21,7 +23,7 @@ typedef struct {
 // 初始化网卡并扫描从站
 bool ecat_master_init(ecat_master_t *master, const char *ifname);
 // 核心同步：发送并接收过程数据
-void ecat_master_sync(ecat_master_t *master);
+int ecat_master_sync(ecat_master_t *master);
 // 安全切换到 OP 状态（含看门狗预热逻辑）
 bool ecat_master_bring_online(ecat_master_t *master);
 

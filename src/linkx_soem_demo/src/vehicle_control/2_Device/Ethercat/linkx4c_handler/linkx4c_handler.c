@@ -70,31 +70,50 @@ static void linkx_snapshot_update(linkx_rx_snapshot_t *snap, const can_tx_pdo_t 
 // 封装 SDO 唤醒逻辑，屏蔽 0x8001 寄存器细节
 bool linkx_hw_wakeup(linkx_t *linkx)
 {
+    if (!linkx)
+        return false;
+
+    bool all_ok = true;
     uint8_t enable = 1;
     printf("[LinkX] Waking up CAN PHYs via SDO...\n");
 
-    for (int ch = 0; ch < 4; ch++)
+    for (int ch = 0; ch < LINKX_CAN_CHANNEL_NUM; ch++)
     {
         bool ok = linkx_switch_can_channel(linkx, ch, enable != 0);
+        all_ok = all_ok && ok;
         if (ok) printf("[LinkX] CAN Channel %d: WAKEUP SUCCESS\n", ch);
         else printf("[LinkX] CAN Channel %d: WAKEUP FAILED\n", ch);
     }
     printf("[LinkX] All hardware initialization commands sent.\n");
-    return true;
+    return all_ok;
 }
 
 // 封装发送：FDCAN自动处理指针强转和 linkx 参数顺序
-void linkx_quick_FDcan_send(linkx_t *linkx, uint8_t ch, uint32_t id, uint8_t *data)
+void linkx_quick_FDcan_send(linkx_t *linkx, uint8_t ch, uint32_t id, const uint8_t *data)
 {
-    // 参数顺序：linkx, channel, id, canfd, brs, ext, rtr, dlen, data
-    linkx_send_can(linkx, ch, id, true, true, false, false, 8, (uint32_t *)data);
+    linkx_send_fdcan_frame(linkx, ch, id, true, false, false, 8, data);
 }
 
 // 封装发送：经典CAN自动处理指针强转和 linkx 参数顺序
-void linkx_quick_can_send(linkx_t *linkx, uint8_t ch, uint32_t id, uint8_t *data)
+void linkx_quick_can_send(linkx_t *linkx, uint8_t ch, uint32_t id, const uint8_t *data)
 {
-    // 参数顺序：linkx, channel, id, canfd, brs, ext, rtr, dlen, data
-    linkx_send_can(linkx, ch, id, false, false, false, false, 8, (uint32_t *)data);
+    linkx_send_classic_can_frame(linkx, ch, id, false, false, 8, data);
+}
+
+// 封装发送：支持可变长度 CAN-FD 负载
+bool linkx_send_fdcan_frame(linkx_t *linkx, uint8_t ch, uint32_t id, bool brs, bool ext, bool rtr,
+                            uint8_t dlen, const uint8_t *data)
+{
+    return linkx_send_can(linkx, ch, id, true, brs, ext, rtr, dlen, data);
+}
+
+// 封装发送：支持可变长度经典 CAN 负载
+bool linkx_send_classic_can_frame(linkx_t *linkx, uint8_t ch, uint32_t id, bool ext, bool rtr,
+                                  uint8_t dlen, const uint8_t *data)
+{
+    if (dlen > 8)
+        dlen = 8;
+    return linkx_send_can(linkx, ch, id, false, false, ext, rtr, dlen, data);
 }
 
 // 封装接收：内置硬件时间戳去重逻辑
@@ -117,6 +136,10 @@ bool linkx_quick_recv(linkx_t *linkx, uint8_t ch, can_msg_t *out_msg)
 
     out_msg->id = rx_pdo->can_id;           // CAN ID
     out_msg->timestamp = rx_pdo->timestamp; // 硬件时间戳
+    out_msg->canfd = rx_pdo->params.canfd != 0;
+    out_msg->brs = rx_pdo->params.brs != 0;
+    out_msg->ext = rx_pdo->params.ext != 0;
+    out_msg->rtr = rx_pdo->params.rtr != 0;
 
     uint8_t out_dlen = pdo_dlen;
     if (out_dlen > sizeof(out_msg->data))
@@ -138,7 +161,7 @@ bool linkx_set_can_baudrate(linkx_t *linkx, uint8_t ch, uint8_t fd_en,
                           uint8_t n_pre, uint8_t n_seg1, uint8_t n_seg2, uint8_t n_sjw,
                           uint8_t d_pre, uint8_t d_seg1, uint8_t d_seg2, uint8_t d_sjw)
 {
-    if (ch >= 4) return false;
+    if (!linkx || !linkx->master || ch >= LINKX_CAN_CHANNEL_NUM) return false;
 
     uint16_t index = 0x8002;  // 统一的时序配置索引
     int wkc_count = 0;        // 记录成功的 SDO 写入次数

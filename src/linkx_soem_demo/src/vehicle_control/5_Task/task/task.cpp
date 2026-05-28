@@ -265,11 +265,21 @@ static bool Init_Ethercat_And_Linkx(const char *ifname)
     }
 
     linkx_init(&linkx_dev, 1, &master.ctx);
-    linkx_hw_wakeup(&linkx_dev);
+    if (!linkx_hw_wakeup(&linkx_dev))
+    {
+        std::cerr << "[TASK] FATAL: LinkX CAN channel wakeup failed." << std::endl;
+        return false;
+    }
 
     // 4 通道全部 1Mbps 经典 CAN
     for (int ch = 0; ch < kChannelCount; ++ch)
-        linkx_set_can_baudrate(&linkx_dev, ch, 0, 2, 31, 8, 8, 1, 31, 8, 8);
+    {
+        if (!linkx_set_can_baudrate(&linkx_dev, ch, 0, 2, 31, 8, 8, 1, 31, 8, 8))
+        {
+            std::cerr << "[TASK] FATAL: LinkX CAN baudrate config failed, ch=" << ch << std::endl;
+            return false;
+        }
+    }
 
     return ecat_master_bring_online(&master);
 }

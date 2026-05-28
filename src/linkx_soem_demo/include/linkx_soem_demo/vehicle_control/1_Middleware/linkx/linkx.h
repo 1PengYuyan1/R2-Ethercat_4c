@@ -117,7 +117,7 @@ extern "C"
     bool linkx_switch_can_channel(linkx_t *linkx, uint8_t channel, bool enable);
     void linkx_recv_pdos(linkx_t *linkx);
     void linkx_send_pdos(linkx_t *linkx);
-    bool linkx_send_can(linkx_t *linkx, uint8_t channel, uint32_t canid, bool canfd, bool brs, bool ext, bool rtr, uint8_t dlen, uint32_t *data);
+    bool linkx_send_can(linkx_t *linkx, uint8_t channel, uint32_t canid, bool canfd, bool brs, bool ext, bool rtr, uint8_t dlen, const uint8_t *data);
     can_tx_pdo_t *linkx_recv_can(linkx_t *linkx, uint8_t channel);
     char *linkx_get_error_string(linkx_t *linkx);
 

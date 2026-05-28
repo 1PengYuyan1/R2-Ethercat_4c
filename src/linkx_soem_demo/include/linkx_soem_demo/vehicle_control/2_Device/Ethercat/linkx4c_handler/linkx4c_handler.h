@@ -9,7 +9,11 @@ typedef struct
 {
     uint32_t id;
     uint8_t dlen;
-    uint8_t data[8];
+    bool canfd;
+    bool brs;
+    bool ext;
+    bool rtr;
+    uint8_t data[LINKX_CAN_MAX_DATA_BYTES];
     uint64_t timestamp;
 } can_msg_t;
 
@@ -21,9 +25,15 @@ extern "C"
     // 封装 SDO 唤醒逻辑，屏蔽 0x8001 寄存器细节
     bool linkx_hw_wakeup(linkx_t *linkx);
     // 封装发送：自动处理指针强转和 linkx 参数顺序
-    void linkx_quick_FDcan_send(linkx_t *linkx, uint8_t ch, uint32_t id, uint8_t *data);
+    void linkx_quick_FDcan_send(linkx_t *linkx, uint8_t ch, uint32_t id, const uint8_t *data);
     // 封装发送：自动处理指针强转和 linkx 参数顺序
-    void linkx_quick_can_send(linkx_t *linkx, uint8_t ch, uint32_t id, uint8_t *data);
+    void linkx_quick_can_send(linkx_t *linkx, uint8_t ch, uint32_t id, const uint8_t *data);
+    // 封装发送：支持可变长度 CAN-FD 负载
+    bool linkx_send_fdcan_frame(linkx_t *linkx, uint8_t ch, uint32_t id, bool brs, bool ext, bool rtr,
+                                uint8_t dlen, const uint8_t *data);
+    // 封装发送：支持可变长度经典 CAN 负载
+    bool linkx_send_classic_can_frame(linkx_t *linkx, uint8_t ch, uint32_t id, bool ext, bool rtr,
+                                      uint8_t dlen, const uint8_t *data);
     // 封装接收：内置硬件时间戳去重逻辑
     bool linkx_quick_recv(linkx_t *linkx, uint8_t ch, can_msg_t *out_msg);
     // 配置 CAN 波特率

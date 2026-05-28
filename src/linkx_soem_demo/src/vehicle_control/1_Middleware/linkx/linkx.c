@@ -222,7 +222,7 @@ void linkx_send_pdos(linkx_t *linkx)
 }
 
 // 发送 CAN 数据，参数详见 linkx_send_can 定义
-bool linkx_send_can(linkx_t *linkx, uint8_t channel, uint32_t canid, bool canfd, bool brs, bool ext, bool rtr, uint8_t dlen, uint32_t *data)
+bool linkx_send_can(linkx_t *linkx, uint8_t channel, uint32_t canid, bool canfd, bool brs, bool ext, bool rtr, uint8_t dlen, const uint8_t *data)
 {
     if (!linkx || channel >= LINKX_CAN_CHANNEL_NUM)
         return false;
@@ -242,7 +242,7 @@ bool linkx_send_can(linkx_t *linkx, uint8_t channel, uint32_t canid, bool canfd,
     frame.params.dlen = dlen;
 
     if (dlen > 0)
-        memcpy(frame.data, (const uint8_t *)data, dlen);
+        memcpy(frame.data, data, dlen);
 
     bool dropped_oldest = false;
     linkx_tx_queue_push_or_update(&linkx->tx_queues[channel], &frame, &dropped_oldest);
