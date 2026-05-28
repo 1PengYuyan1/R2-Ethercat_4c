@@ -215,7 +215,7 @@ public:
     inline float Get_Torque_Max();
     inline float Get_Current_Max();
     inline Enum_Motor_DM_Status Get_Status();
-    inline float Get_Now_Control_Status();
+    inline Enum_Motor_DM_Control_Status_Normal Get_Now_Control_Status();
     inline float Get_Now_Radian();
     inline float Get_Now_Omega();
     inline float Get_Now_Torque();
@@ -540,7 +540,7 @@ inline float Class_Motor_DM_Normal::Get_K_D()
  *
  * @return float 当前舵向角速度
  */
-inline float Class_Motor_DM_Normal::Get_Now_Control_Status()
+inline Enum_Motor_DM_Control_Status_Normal Class_Motor_DM_Normal::Get_Now_Control_Status()
 {
     return (data.Control_Status);
 }

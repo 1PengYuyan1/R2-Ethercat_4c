@@ -16,26 +16,26 @@ find_package(sensor_msgs REQUIRED)
 # 复用源列表：SOEM 底层（所有 test_main + 主控都依赖）
 # ============================================================================
 set(SOEM_SRC
-    src/vehicle_control/middleware/soem/ec_base.c
-    src/vehicle_control/middleware/soem/ec_coe.c
-    src/vehicle_control/middleware/soem/ec_config.c
-    src/vehicle_control/middleware/soem/ec_dc.c
-    src/vehicle_control/middleware/soem/ec_eoe.c
-    src/vehicle_control/middleware/soem/ec_foe.c
-    src/vehicle_control/middleware/soem/ec_main.c
-    src/vehicle_control/middleware/soem/ec_print.c
-    src/vehicle_control/middleware/soem/ec_soe.c
-    src/vehicle_control/middleware/soem/nicdrv.c
-    src/vehicle_control/middleware/soem/osal.c
-    src/vehicle_control/middleware/soem/oshw.c
+    src/vehicle_control/1_Middleware/soem/ec_base.c
+    src/vehicle_control/1_Middleware/soem/ec_coe.c
+    src/vehicle_control/1_Middleware/soem/ec_config.c
+    src/vehicle_control/1_Middleware/soem/ec_dc.c
+    src/vehicle_control/1_Middleware/soem/ec_eoe.c
+    src/vehicle_control/1_Middleware/soem/ec_foe.c
+    src/vehicle_control/1_Middleware/soem/ec_main.c
+    src/vehicle_control/1_Middleware/soem/ec_print.c
+    src/vehicle_control/1_Middleware/soem/ec_soe.c
+    src/vehicle_control/1_Middleware/soem/nicdrv.c
+    src/vehicle_control/1_Middleware/soem/osal.c
+    src/vehicle_control/1_Middleware/soem/oshw.c
 )
 
 # 复用源列表：LinkX + EtherCAT manager（需要 CAN 收发的 test_main 用得到）
 set(LINKX_BRIDGE_SRC
-    src/vehicle_control/middleware/linkx/linkx.c
-    src/vehicle_control/device/ecat_manager/ecat_manager.c
-    src/vehicle_control/device/linkx4c_handler/linkx4c_handler.c
-    src/vehicle_control/device/rt_timing/rt_timing.c
+    src/vehicle_control/1_Middleware/linkx/linkx.c
+    src/vehicle_control/2_Device/Ethercat/ecat_manager/ecat_manager.c
+    src/vehicle_control/2_Device/Ethercat/linkx4c_handler/linkx4c_handler.c
+    src/vehicle_control/2_Device/rt_timing/rt_timing.c
 )
 
 # 复用 include 目录（test_main 共用）
@@ -51,11 +51,10 @@ set(TEST_MAIN_INCLUDE_DIRS
     include/linkx_soem_demo/vehicle_control/1_Middleware/soem
     include/linkx_soem_demo/vehicle_control/2_Device
     include/linkx_soem_demo/vehicle_control/2_Device/Motor
-    include/linkx_soem_demo/vehicle_control/2_Device/Buzzer
-    include/linkx_soem_demo/vehicle_control/2_Device/Suction
     include/linkx_soem_demo/vehicle_control/2_Device/OPS
-    include/linkx_soem_demo/vehicle_control/2_Device/ecat_manager
-    include/linkx_soem_demo/vehicle_control/2_Device/linkx4c_handler
+    include/linkx_soem_demo/vehicle_control/2_Device/Ethercat
+    include/linkx_soem_demo/vehicle_control/2_Device/Ethercat/ecat_manager
+    include/linkx_soem_demo/vehicle_control/2_Device/Ethercat/linkx4c_handler
     include/linkx_soem_demo/vehicle_control/2_Device/rt_timing
     include/linkx_soem_demo/vehicle_control/3_Chariot
     include/linkx_soem_demo/vehicle_control/3_Chariot/chassis
@@ -74,25 +73,23 @@ set(TEST_MAIN_INCLUDE_DIRS
 
 set(VEHICLE_CONTROL_SRC
     src/vehicle_control/main.cpp
-    src/vehicle_control/task/task/task.cpp
-    src/vehicle_control/interaction/robot/robot.cpp
+    src/vehicle_control/5_Task/task/task.cpp
+    src/vehicle_control/4_Interaction/robot/robot.cpp
 
     # 3_Chariot —— 全向轮工况
-    src/vehicle_control/chariot/chassis/omni_wheel/crt_chassis_omni.cpp
-    src/vehicle_control/chariot/gantry/crt_gantry.cpp
-    src/vehicle_control/chariot/arm/crt_arm.cpp
-    src/vehicle_control/chariot/navigation/crt_navigation.cpp
+    src/vehicle_control/3_Chariot/chassis/omni_wheel/crt_chassis_omni.cpp
+    src/vehicle_control/3_Chariot/gantry/crt_gantry.cpp
+    src/vehicle_control/3_Chariot/arm/crt_arm.cpp
+    src/vehicle_control/3_Chariot/navigation/crt_navigation.cpp
 
     # 2_Device
-    src/vehicle_control/device/Motor/dvc_motor_dm.cpp
-    src/vehicle_control/device/Buzzer/dvc_buzzer.cpp
-    src/vehicle_control/device/Suction/dvc_suction.cpp
-    src/vehicle_control/device/OPS/dvc_ops.cpp
+    src/vehicle_control/2_Device/Motor/dvc_motor_dm.cpp
+    src/vehicle_control/2_Device/OPS/dvc_ops.cpp
     ${LINKX_BRIDGE_SRC}
 
     # 1_Middleware
-    src/vehicle_control/middleware/Algorithm/alg_pid.cpp
-    src/vehicle_control/middleware/Algorithm/ramp.c
+    src/vehicle_control/1_Middleware/Algorithm/alg_pid.cpp
+    src/vehicle_control/1_Middleware/Algorithm/ramp.c
     ${SOEM_SRC}
 )
 
@@ -110,11 +107,10 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     include/linkx_soem_demo/vehicle_control/1_Middleware/soem
     include/linkx_soem_demo/vehicle_control/2_Device
     include/linkx_soem_demo/vehicle_control/2_Device/Motor
-    include/linkx_soem_demo/vehicle_control/2_Device/Buzzer
-    include/linkx_soem_demo/vehicle_control/2_Device/Suction
     include/linkx_soem_demo/vehicle_control/2_Device/OPS
-    include/linkx_soem_demo/vehicle_control/2_Device/ecat_manager
-    include/linkx_soem_demo/vehicle_control/2_Device/linkx4c_handler
+    include/linkx_soem_demo/vehicle_control/2_Device/Ethercat
+    include/linkx_soem_demo/vehicle_control/2_Device/Ethercat/ecat_manager
+    include/linkx_soem_demo/vehicle_control/2_Device/Ethercat/linkx4c_handler
     include/linkx_soem_demo/vehicle_control/2_Device/rt_timing
     include/linkx_soem_demo/vehicle_control/3_Chariot
     include/linkx_soem_demo/vehicle_control/3_Chariot/chassis
@@ -189,10 +185,10 @@ target_link_libraries(can_link_test pcap pthread rt m)
 # ============================================================================
 add_executable(motor_calib
     src/test_mains/motor_calib_main.cpp
-    src/vehicle_control/chariot/chassis/steer_wheel/crt_chassis.cpp
-    src/vehicle_control/device/Motor/dvc_motor_dm.cpp
-    src/vehicle_control/middleware/Algorithm/alg_pid.cpp
-    src/vehicle_control/middleware/Algorithm/ramp.c
+    src/vehicle_control/3_Chariot/chassis/steer_wheel/crt_chassis.cpp
+    src/vehicle_control/2_Device/Motor/dvc_motor_dm.cpp
+    src/vehicle_control/1_Middleware/Algorithm/alg_pid.cpp
+    src/vehicle_control/1_Middleware/Algorithm/ramp.c
     ${SOEM_SRC}
     ${LINKX_BRIDGE_SRC}
 )
@@ -205,10 +201,10 @@ target_link_libraries(motor_calib pcap pthread rt m)
 # ============================================================================
 add_executable(steer_tuning
     src/test_mains/steer_tuning_main.cpp
-    src/vehicle_control/chariot/chassis/steer_wheel/crt_chassis.cpp
-    src/vehicle_control/device/Motor/dvc_motor_dm.cpp
-    src/vehicle_control/middleware/Algorithm/alg_pid.cpp
-    src/vehicle_control/middleware/Algorithm/ramp.c
+    src/vehicle_control/3_Chariot/chassis/steer_wheel/crt_chassis.cpp
+    src/vehicle_control/2_Device/Motor/dvc_motor_dm.cpp
+    src/vehicle_control/1_Middleware/Algorithm/alg_pid.cpp
+    src/vehicle_control/1_Middleware/Algorithm/ramp.c
     ${SOEM_SRC}
     ${LINKX_BRIDGE_SRC}
 )
@@ -222,17 +218,15 @@ target_link_libraries(steer_tuning pcap pthread rt m)
 # ============================================================================
 add_executable(robot_test
     src/test_mains/robot_test_main.cpp
-    src/vehicle_control/interaction/robot/robot.cpp
-    src/vehicle_control/chariot/chassis/omni_wheel/crt_chassis_omni.cpp
-    src/vehicle_control/chariot/gantry/crt_gantry.cpp
-    src/vehicle_control/chariot/arm/crt_arm.cpp
-    src/vehicle_control/chariot/navigation/crt_navigation.cpp
-    src/vehicle_control/device/Motor/dvc_motor_dm.cpp
-    src/vehicle_control/device/Buzzer/dvc_buzzer.cpp
-    src/vehicle_control/device/Suction/dvc_suction.cpp
-    src/vehicle_control/device/OPS/dvc_ops.cpp
-    src/vehicle_control/middleware/Algorithm/alg_pid.cpp
-    src/vehicle_control/middleware/Algorithm/ramp.c
+    src/vehicle_control/4_Interaction/robot/robot.cpp
+    src/vehicle_control/3_Chariot/chassis/omni_wheel/crt_chassis_omni.cpp
+    src/vehicle_control/3_Chariot/gantry/crt_gantry.cpp
+    src/vehicle_control/3_Chariot/arm/crt_arm.cpp
+    src/vehicle_control/3_Chariot/navigation/crt_navigation.cpp
+    src/vehicle_control/2_Device/Motor/dvc_motor_dm.cpp
+    src/vehicle_control/2_Device/OPS/dvc_ops.cpp
+    src/vehicle_control/1_Middleware/Algorithm/alg_pid.cpp
+    src/vehicle_control/1_Middleware/Algorithm/ramp.c
     ${SOEM_SRC}
     ${LINKX_BRIDGE_SRC}
 )

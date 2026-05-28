@@ -46,7 +46,7 @@ void Class_Chassis_Omni::TIM_100ms_Alive_PeriodElapsedCallback()
     {
         for (int i = 0; i < OMNI_WHEEL_NUM; i++)
         {
-            if (Motor_Wheel[i].Get_Status() != Motor_DM_Control_Status_ENABLE)
+            if (Motor_Wheel[i].Get_Status() != Motor_DM_Status_ENABLE)
             {
                 Motor_Wheel[i].CAN_Send_Clear_Error();
                 Motor_Wheel[i].CAN_Send_Enter();
@@ -76,7 +76,7 @@ void Class_Chassis_Omni::TIM_2ms_Control_PeriodElapsedCallback()
             {
                 Motor_Wheel[i].Set_Control_Status(Motor_DM_Status_DISABLE);
                 Motor_Wheel[i].Set_Control_Maintain_Postion(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
-                if (Motor_Wheel[i].Get_Now_Control_Status() != Motor_DM_Status_DISABLE)
+                if (Motor_Wheel[i].Get_Now_Control_Status() != Motor_DM_Control_Status_DISABLE)
                 {
                     Motor_Wheel[i].CAN_Send_Exit();
                 }

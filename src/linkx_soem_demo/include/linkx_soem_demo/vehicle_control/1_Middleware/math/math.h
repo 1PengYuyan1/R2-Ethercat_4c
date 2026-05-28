@@ -7,7 +7,11 @@
 #include <cmath>
 #else
 #include <stdint.h>
-#include <math.h>
+#if defined(__GNUC__)
+#include_next <math.h>
+#else
+extern float fmodf(float, float);
+#endif
 #endif
 
 #ifndef CELSIUS_TO_KELVIN

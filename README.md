@@ -1,7 +1,7 @@
 # Ethercat-R2 上位机控制栈
 
 基于 **SOEM / EtherCAT 主站 + LinkX-4C CAN 桥** 的 R2 整车 ROS 2 控制工作空间。
-PC 通过一张普通以太网卡跑 EtherCAT,经由 LinkX-4C 把 4 路经典 CAN 桥到舵向(DM6225)/ 轮向(DM3519)/ 升降(Gantry)/ 机械臂(Arm)/ 真空(Suction) 等设备。
+PC 通过一张普通以太网卡跑 EtherCAT,经由 LinkX-4C 把 4 路经典 CAN 桥到舵向(DM6225)/ 轮向(DM3519)/ 升降(Gantry)/ 机械臂(Arm) 等设备。
 手柄(Logitech F710)通过 `joy` 解算成 `/cmd_vel` 与按键话题,转发给整车主控。
 
 - 平台:Ubuntu + ROS 2 Humble
@@ -28,7 +28,7 @@ Ethercat-R2/
         │   ├── vehicle_control/        # 整车主控可执行
         │   │   ├── main.cpp
         │   │   ├── middleware/         # 1) SOEM / LinkX / Algorithm (PID, ramp)
-        │   │   ├── device/             # 2) Motor / Buzzer / Suction / OPS / ecat_manager / linkx4c_handler / rt_timing
+        │   │   ├── device/             # 2) Motor / OPS / ecat_manager / linkx4c_handler / rt_timing
         │   │   ├── chariot/            # 3) chassis / gantry / arm / navigation
         │   │   ├── interaction/        # 4) robot
         │   │   └── task/               # 5) task 顶层调度
@@ -141,7 +141,7 @@ joy_node ──► /joy ──► remote_node ──► /cmd_vel ─────
 | `can_link_test` | 4 通道经典 CAN 1Mbps 链路冒烟测试 |
 | `motor_calib` | DM6225 / DM3519 电机参数标定(动/静摩擦、惯量) |
 | `steer_tuning` | 舵向 PID 网格自动扫参,输出 `var_data/steer_tuning_results.csv` |
-| `robot_test` | 整车回归(Init / EtherCAT / TIM / ROS 桥 / 限速短转 / Gantry / Arm / Suction) |
+| `robot_test` | 整车回归(Init / EtherCAT / TIM / ROS 桥 / 限速短转 / Gantry / Arm) |
 
 ---
 

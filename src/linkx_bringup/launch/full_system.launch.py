@@ -14,7 +14,7 @@ def generate_launch_description():
     ros_nodes_prefix = LaunchConfiguration('ros_nodes_prefix')
 
     return LaunchDescription([
-        DeclareLaunchArgument('ifname', default_value='enp86s0'),
+        DeclareLaunchArgument('ifname', default_value='enxf01e341224fd'),
         DeclareLaunchArgument('max_speed', default_value='1.5'),
         DeclareLaunchArgument('start_vehicle_control', default_value='true'),
         DeclareLaunchArgument('start_gimbal_bridge', default_value='false'),

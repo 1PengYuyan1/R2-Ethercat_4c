@@ -63,7 +63,7 @@ float f_LogisticCurves_Calc(float x , float k ,float x0)
 	
 	if(k == 0.f)return 1.f;
 	
-	y = 1/(1+pow(Euler_Number,(k*(x-x0))));
+	y = 1.0f / (1.0f + powf(Euler_Number, (k * (x - x0))));
 	
 	return y;
 }
@@ -135,5 +135,4 @@ float MovingAverage_Update(MovingAverage_Info_TypeDef *MA,float input)
   return MA->output;
 }
 //------------------------------------------------------------------------------
-
 

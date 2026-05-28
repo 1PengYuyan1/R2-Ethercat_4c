@@ -12,7 +12,6 @@
 //   T5  限速短转 (0.05 m/s × 2s)     —— Chassis Self_Resolution 跟得上
 //   T6  Gantry 上升 → 下降           —— LIFT_POS2 → LIFT_POS1 角度反馈达标
 //   T7  Arm 位置切换                 —— Arm_grab → Arm_zero 反馈达标
-//   T8  Suction 开/关                —— ROS /r2/suction/cmd 发布次数+1
 //
 // 使用：
 //   sudo ./robot_test [<iface>]      # 默认 enp86s0

@@ -18,8 +18,8 @@ void Class_Gantry::TIM_100ms_Alive_PeriodElapsedCallback() {
     Motor_Lift_Left.TIM_Alive_PeriodElapsedCallback();
 
     if (Gantry_Control_Type == GANTRY_CONTROL_ENABLE) {
-        if (Motor_Lift_Right.Get_Status() != Motor_DM_Control_Status_ENABLE) Motor_Lift_Right.CAN_Send_Enter();
-        if (Motor_Lift_Left.Get_Status() != Motor_DM_Control_Status_ENABLE) Motor_Lift_Left.CAN_Send_Enter();
+        if (Motor_Lift_Right.Get_Status() != Motor_DM_Status_ENABLE) Motor_Lift_Right.CAN_Send_Enter();
+        if (Motor_Lift_Left.Get_Status() != Motor_DM_Status_ENABLE) Motor_Lift_Left.CAN_Send_Enter();
     }
 }
 
@@ -29,8 +29,8 @@ void Class_Gantry::TIM_Calculate_PeriodElapsedCallback() {
             Motor_Lift_Right.Set_Control_Status(Motor_DM_Status_DISABLE);
             Motor_Lift_Left.Set_Control_Status(Motor_DM_Status_DISABLE);
 
-            if (Motor_Lift_Right.Get_Now_Control_Status() != Motor_DM_Status_DISABLE) Motor_Lift_Right.CAN_Send_Exit();
-            if (Motor_Lift_Left.Get_Now_Control_Status() != Motor_DM_Status_DISABLE) Motor_Lift_Left.CAN_Send_Exit();
+            if (Motor_Lift_Right.Get_Now_Control_Status() != Motor_DM_Control_Status_DISABLE) Motor_Lift_Right.CAN_Send_Exit();
+            if (Motor_Lift_Left.Get_Now_Control_Status() != Motor_DM_Control_Status_DISABLE) Motor_Lift_Left.CAN_Send_Exit();
 
             // 掉线重置平滑点 (左右独立读取真实位置)
             smooth_lift_left_angle = Motor_Lift_Left.Get_Now_Radian();
@@ -58,7 +58,7 @@ void Class_Gantry::TIM_Calculate_PeriodElapsedCallback() {
             else smooth_lift_right_angle = final_lift_right_target;
 
             // === 1. 下发右侧电机 (保留负号，实现镜像反转) ===
-            if (Motor_Lift_Right.Get_Status() != Motor_DM_Control_Status_ENABLE) {
+            if (Motor_Lift_Right.Get_Status() != Motor_DM_Status_ENABLE) {
                 Motor_Lift_Right.CAN_Send_Enter();
             } else {
                 Motor_Lift_Right.Set_Control_Parameter_MIT(-smooth_lift_right_angle, 0.0f);
@@ -66,7 +66,7 @@ void Class_Gantry::TIM_Calculate_PeriodElapsedCallback() {
             Motor_Lift_Right.TIM_Send_PeriodElapsedCallback();
 
             // === 2. 下发左侧电机 (正常正向) ===
-            if (Motor_Lift_Left.Get_Status() != Motor_DM_Control_Status_ENABLE) {
+            if (Motor_Lift_Left.Get_Status() != Motor_DM_Status_ENABLE) {
                 Motor_Lift_Left.CAN_Send_Enter();
             } else {
                 Motor_Lift_Left.Set_Control_Parameter_MIT(smooth_lift_left_angle, 0.0f);

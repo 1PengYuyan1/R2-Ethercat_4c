@@ -11,7 +11,6 @@
 #include "crt_arm.h"
 #include "crt_navigation.h"
 #include "dvc_ops.h"
-#include "dvc_suction.h"
 
 #include <atomic>
 #include <chrono>
@@ -48,8 +47,7 @@ protected:
     enum GantryState {
         GANTRY_STATE_DISABLE,
         GANTRY_STATE_LOW_POS,
-        GANTRY_STATE_HIGH_POS,
-        GANTRY_STATE_SUCTION
+        GANTRY_STATE_HIGH_POS
     };
 
     struct Ros_Command {

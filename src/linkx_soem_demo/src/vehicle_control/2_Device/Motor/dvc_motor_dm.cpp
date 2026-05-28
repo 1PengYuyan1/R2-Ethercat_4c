@@ -139,7 +139,6 @@ void Class_Motor_DM_Normal::TIM_Alive_PeriodElapsedCallback() {
     if (Flag == Pre_Flag) {
         // 电机断开连接
         Motor_DM_Status = Motor_DM_Status_DISABLE;
-        // Buzzer_Play_SystemError();
     } else {
         // 电机保持连接
         Motor_DM_Status = Motor_DM_Status_ENABLE;
@@ -155,7 +154,7 @@ void Class_Motor_DM_Normal::TIM_Alive_PeriodElapsedCallback() {
  */
 void Class_Motor_DM_Normal::TIM_Send_PeriodElapsedCallback() {
 
-    if (data.Control_Status == Motor_DM_Status_ENABLE) {
+    if (data.Control_Status == Motor_DM_Control_Status_ENABLE) {
         // 电机在线, 正常控制
         Math_Constrain(&Control_Radian, -Radian_Max, Radian_Max);
         Math_Constrain(&Control_Omega, -Omega_Max, Omega_Max);
@@ -165,7 +164,7 @@ void Class_Motor_DM_Normal::TIM_Send_PeriodElapsedCallback() {
         Math_Constrain(&K_D, 0.0f, 5.0f);
 
         Output();
-    } else if (data.Control_Status == Motor_DM_Status_DISABLE) {
+    } else if (data.Control_Status == Motor_DM_Control_Status_DISABLE) {
         // 电机可能掉线, 使能电机
         CAN_Send_Enter();
     } else {

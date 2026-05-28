@@ -6,7 +6,7 @@
  *    - 单 LinkX 适配器（无 FD 第二片）
  *    - 全 DM 电机（DM6225 舵向 + DM3519 轮向 + 龙门 + 机械臂），无 ODrive
  *    - 无外部 BRT 编码器，无编码器多圈持久化
- *    - 无夹爪 Clamp，新增龙门 Gantry / 机械臂 Arm / 真空 Suction
+ *    - 无夹爪 Clamp，新增龙门 Gantry / 机械臂 Arm
  *
  *  本文件做的事：
  *    1. EtherCAT 主站 + 单 LinkX 4 通道 CAN（1Mbps）初始化

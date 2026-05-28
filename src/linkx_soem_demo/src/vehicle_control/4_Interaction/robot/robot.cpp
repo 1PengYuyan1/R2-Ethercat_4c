@@ -138,9 +138,7 @@ void Class_Robot::Start_ROS2_Bridge()
 
     pub_odom_ = bridge_node_->create_publisher<geometry_msgs::msg::Twist>("/chassis/odom_twist", 50);
 
-    // OPS 与 Suction 也复用 bridge_node_ 句柄
     ops.init(bridge_node_.get());
-    dvc_suction::Bind_Node(bridge_node_.get());
 
     ros_bridge_running_.store(true);
     ros_spin_thread_ = std::thread(&Class_Robot::_ROS2_Spin_Loop, this);
@@ -276,7 +274,6 @@ void Class_Robot::_Gantry_control()
     {
         if      (snapshot.gantry_state == 0) current_gantry_state_ = GANTRY_STATE_LOW_POS;
         else if (snapshot.gantry_state == 1) current_gantry_state_ = GANTRY_STATE_HIGH_POS;
-        else if (snapshot.gantry_state == 2) current_gantry_state_ = GANTRY_STATE_SUCTION;
         // 其它值（含 0xFF）保持当前状态
     }
     else
@@ -305,7 +302,6 @@ void Class_Robot::_Gantry_control()
     case GANTRY_STATE_HIGH_POS:
         Gantry.Set_Gantry_Control_Type(GANTRY_CONTROL_ENABLE);
         Arm.Set_Arm_Control_Type(ARM_CONTROL_ENABLE);
-        dvc_suction::give();
         if (Arm_timer_ < 1000) Arm_timer_++;
         if (Arm_timer_ >= 500)
         {
@@ -313,14 +309,6 @@ void Class_Robot::_Gantry_control()
             if (gantry_timer_ < 2000) gantry_timer_++;
             if (gantry_timer_ >= 1000) Gantry.Set_Lift_State(LIFT_POS1);
         }
-        break;
-
-    case GANTRY_STATE_SUCTION:
-        Gantry.Set_Gantry_Control_Type(GANTRY_CONTROL_ENABLE);
-        Arm.Set_Arm_Control_Type(ARM_CONTROL_ENABLE);
-        Arm_timer_ = 0;
-        gantry_timer_ = 0;
-        dvc_suction::stop_give();
         break;
     }
 }

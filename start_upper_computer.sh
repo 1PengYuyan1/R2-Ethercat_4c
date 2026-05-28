@@ -2,7 +2,7 @@
 # 启动上位机 ROS 2 控制栈：joy → remote_node → cmd_vel → chassis_relay → linkx_soem_demo (EtherCAT)
 #
 # 使用方法:
-#   ./start_upper_computer.sh                                 # 默认 ifname=enp86s0, sudo, max_speed=1.5
+#   ./start_upper_computer.sh                                 # 默认 ifname=enxf01e341224fd (拓展坞), sudo, max_speed=1.5
 #   ./start_upper_computer.sh --ifname eth0                   # 指定网卡
 #   ./start_upper_computer.sh --no-vehicle                    # 仅启动 ROS 话题，不启动 EtherCAT 主控
 #   ./start_upper_computer.sh --no-sudo                       # 已 setcap 时跳过 sudo
@@ -20,7 +20,7 @@ set -euo pipefail
 WS_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "${WS_DIR}"
 
-IFNAME="${IFNAME:-enp86s0}"
+IFNAME="${IFNAME:-enxf01e341224fd}"
 MAX_SPEED="${MAX_SPEED:-1.5}"
 USE_SUDO="true"
 START_VEHICLE="true"
@@ -41,7 +41,9 @@ if [[ ! -f /opt/ros/humble/setup.bash ]]; then
     echo "[ERROR] /opt/ros/humble/setup.bash not found. Install ROS 2 Humble first." >&2
     exit 1
 fi
+set +u
 source /opt/ros/humble/setup.bash
+set -u
 
 if [[ ! -d build || ! -d install ]]; then
     echo "[INFO] First-time build (colcon)..."
@@ -50,7 +52,9 @@ if [[ ! -d build || ! -d install ]]; then
                                 -DCMAKE_C_COMPILER=/usr/bin/gcc \
                                 -DCMAKE_CXX_COMPILER=/usr/bin/g++
 fi
+set +u
 source install/setup.bash
+set -u
 
 # raw 以太网权限：默认 sudo 启动，需要保留 LD_LIBRARY_PATH
 PREFIX=""

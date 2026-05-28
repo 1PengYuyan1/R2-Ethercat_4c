@@ -15,7 +15,7 @@ void Class_Arm::TIM_100ms_Alive_PeriodElapsedCallback() {
     Arm.TIM_Alive_PeriodElapsedCallback();
 
     if (Arm_Control_Type == ARM_CONTROL_ENABLE) {
-        if (Arm.Get_Status() != Motor_DM_Control_Status_ENABLE) Arm.CAN_Send_Enter();
+        if (Arm.Get_Status() != Motor_DM_Status_ENABLE) Arm.CAN_Send_Enter();
     }
 }
 
@@ -24,7 +24,7 @@ void Class_Arm::TIM_Calculate_PeriodElapsedCallback() {
         case ARM_CONTROL_DISABLE: {
             Arm.Set_Control_Status(Motor_DM_Status_DISABLE);
 
-            if (Arm.Get_Now_Control_Status() != Motor_DM_Status_DISABLE) Arm.CAN_Send_Exit();
+            if (Arm.Get_Now_Control_Status() != Motor_DM_Control_Status_DISABLE) Arm.CAN_Send_Exit();
 
             // 掉线重置平滑点 (注意这里要减去 offset 转换为相对角度)
             arm_smooth_angle = Arm.Get_Now_Radian() - zero_offset;
@@ -57,7 +57,7 @@ void Class_Arm::TIM_Calculate_PeriodElapsedCallback() {
             else arm_smooth_angle = final_arm_target;
 
             // 下发平滑后的目标位置 (加上物理零点偏置)
-            if (Arm.Get_Status() != Motor_DM_Control_Status_ENABLE) {
+            if (Arm.Get_Status() != Motor_DM_Status_ENABLE) {
                 Arm.CAN_Send_Enter();
             } else {
                 Arm.Set_Control_Parameter_MIT(arm_smooth_angle + zero_offset, 0.0f);

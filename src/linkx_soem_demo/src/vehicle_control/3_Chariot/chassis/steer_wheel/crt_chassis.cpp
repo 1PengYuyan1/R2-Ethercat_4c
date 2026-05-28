@@ -148,13 +148,13 @@ void Class_Chassis::TIM_100ms_Alive_PeriodElapsedCallback()
         for (int i = 0; i < STEER_NUM; i++)
         {
             // --- 达妙电机检查 (保持不变) ---
-            if (Motor_Steer[i].Get_Status() != Motor_DM_Control_Status_ENABLE)
+            if (Motor_Steer[i].Get_Status() != Motor_DM_Status_ENABLE)
             {
                 Motor_Steer[i].CAN_Send_Clear_Error();
                 Motor_Steer[i].CAN_Send_Enter();
             }
 
-            if (Motor_Wheel[i].Get_Status() != Motor_DM_Control_Status_ENABLE)
+            if (Motor_Wheel[i].Get_Status() != Motor_DM_Status_ENABLE)
             {
                 Motor_Wheel[i].CAN_Send_Clear_Error();
                 Motor_Wheel[i].CAN_Send_Enter();
@@ -188,7 +188,7 @@ void Class_Chassis::TIM_2ms_Control_PeriodElapsedCallback()
                 /* -------- 舵向 G6220 -------- */
                 Motor_Steer[i].Set_Control_Status(Motor_DM_Status_DISABLE);
                 Motor_Steer[i].Set_Control_Parameter_MIT(0.0f, 0.0f);
-                if (Motor_Steer[i].Get_Now_Control_Status() != Motor_DM_Status_DISABLE)
+                if (Motor_Steer[i].Get_Now_Control_Status() != Motor_DM_Control_Status_DISABLE)
                 {
                     Motor_Steer[i].CAN_Send_Exit();
                 }
@@ -197,7 +197,7 @@ void Class_Chassis::TIM_2ms_Control_PeriodElapsedCallback()
                 Motor_Wheel[i].Set_Control_Status(Motor_DM_Status_DISABLE);
                 Motor_Wheel[i].Set_Control_Maintain_Postion(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
                 // 【修复点】：原来这里写错了，应该是 Motor_Wheel 发送 Exit
-                if (Motor_Wheel[i].Get_Now_Control_Status() != Motor_DM_Status_DISABLE)
+                if (Motor_Wheel[i].Get_Now_Control_Status() != Motor_DM_Control_Status_DISABLE)
                 {
                     Motor_Wheel[i].CAN_Send_Exit();
                 }
@@ -758,4 +758,3 @@ void Class_Chassis::Output_To_Motor()
         Motor_Wheel[i].TIM_Send_PeriodElapsedCallback();
     }
 }
-
