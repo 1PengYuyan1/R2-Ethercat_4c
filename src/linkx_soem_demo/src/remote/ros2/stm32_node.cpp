@@ -24,25 +24,30 @@ public:
         sub_buttons_ = this->create_subscription<std_msgs::msg::UInt16>(
             input_buttons_topic, 10, std::bind(&Ros2BridgeNode::buttonCallback, this, std::placeholders::_1));
 
-        RCLCPP_INFO(this->get_logger(),
-                    "ROS2 桥接已启动: [%s, %s] -> [%s, %s]",
-                    input_cmd_topic.c_str(), input_buttons_topic.c_str(),
-                    output_cmd_topic.c_str(), output_buttons_topic.c_str());
     }
 
 private:
+    uint16_t last_logged_button_ = 0xFFFFU;
+
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr sub_cmd_;
     rclcpp::Subscription<std_msgs::msg::UInt16>::SharedPtr sub_buttons_;
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr pub_cmd_;
     rclcpp::Publisher<std_msgs::msg::UInt16>::SharedPtr pub_buttons_;
 
-    void cmdCallback(const geometry_msgs::msg::Twist::SharedPtr msg) const {
+    void cmdCallback(const geometry_msgs::msg::Twist::SharedPtr msg) {
         pub_cmd_->publish(*msg);
     }
 
-    void buttonCallback(const std_msgs::msg::UInt16::SharedPtr msg) const {
+    void buttonCallback(const std_msgs::msg::UInt16::SharedPtr msg) {
         pub_buttons_->publish(*msg);
+        if (msg->data != last_logged_button_) {
+            last_logged_button_ = msg->data;
+            RCLCPP_WARN(this->get_logger(),
+                        "button relay: code=0x%04X",
+                        static_cast<unsigned>(msg->data));
+        }
     }
+
 };
 
 int main(int argc, char** argv) {

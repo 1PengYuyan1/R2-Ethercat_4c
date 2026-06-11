@@ -2,10 +2,11 @@
 #include <sensor_msgs/msg/joy.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 #include <std_msgs/msg/u_int16.hpp>
-#include <cmath>
+#include <cstdint>
 
 #include "linkx_soem_demo/remote/ros2/robot_types.hpp"
 #include "linkx_soem_demo/remote/ros2/joystick_mapper.hpp"
+#include "linkx_soem_demo/vehicle_control/3_Chariot/chassis/omni_wheel/crt_chassis_omni.h"
 
 class TeleopNode : public rclcpp::Node
 {
@@ -14,27 +15,28 @@ public:
     {
         mapper_ = std::make_unique<JoystickMapper>();
 
-        this->declare_parameter("max_speed", 2.0);
-        float max_speed = this->get_parameter("max_speed").as_double();
-        
-        mapper_->setParams(max_speed, 1.5f, 0.05f);
+        mapper_->setParams(MAX_OMNI_CHASSIS_SPEED, MAX_OMNI_CHASSIS_OMEGA, 0.05f);
+
+        this->declare_parameter("cmd_topic", "/chassis/remote_cmd_vel");
+        this->declare_parameter("buttons_topic", "/robot_buttons");
+
+        const auto cmd_topic = this->get_parameter("cmd_topic").as_string();
+        const auto buttons_topic = this->get_parameter("buttons_topic").as_string();
 
         sub_joy_ = this->create_subscription<sensor_msgs::msg::Joy>(
-            "/joy", 10, std::bind(&TeleopNode::joyCallback, this, std::placeholders::_1));
+            "/joy",
+            rclcpp::SensorDataQoS(),
+            std::bind(&TeleopNode::joyCallback, this, std::placeholders::_1));
 
-                    // 创建按键发布者
+        pub_chassis_ = this->create_publisher<geometry_msgs::msg::Twist>(cmd_topic, 10);
+        pub_buttons_ = this->create_publisher<std_msgs::msg::UInt16>(buttons_topic, 10);
 
-        pub_chassis_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
-
-        // 创建按键发布者
-        pub_buttons_ = this->create_publisher<std_msgs::msg::UInt16>("/robot_buttons", 10);
-
-        RCLCPP_INFO(this->get_logger(), "分离架构遥控节点已启动！");
     }
 
 private:
-    static constexpr bool kEnablePublishDebugLog = false;
     std::unique_ptr<JoystickMapper> mapper_;
+    uint16_t last_logged_button_ = 0xFFFFU;
+    uint64_t last_logged_button_mask_ = ~0ULL;
 
     rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr sub_joy_;
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr pub_chassis_;
@@ -50,14 +52,24 @@ private:
         // 2. 解算功能机构按钮 (新增!)
         uint16_t button_data = mapper_->processButtons(msg->axes, msg->buttons);
         publishButtonMsg(button_data);
-        // 3. 调试输出：仅当有明显输入时打印
-        if (kEnablePublishDebugLog &&
-            (std::abs(chassis_data.vx) > 0.01 || std::abs(chassis_data.vy) > 0.01 ||
-             std::abs(chassis_data.omega) > 0.01 || button_data != 0))
+
+        uint64_t button_mask = 0ULL;
+        for (size_t i = 0; i < msg->buttons.size() && i < 64U; ++i)
         {
-            RCLCPP_INFO(this->get_logger(),
-                        "发布 -> 速度: [vx=%.2f, vy=%.2f , omega=%.2f] | 按键掩码: 0x%04X",
-                        chassis_data.vx, chassis_data.vy, chassis_data.omega, button_data);
+            if (msg->buttons[i] != 0)
+                button_mask |= (1ULL << i);
+        }
+
+        if (button_data != last_logged_button_ || button_mask != last_logged_button_mask_)
+        {
+            last_logged_button_ = button_data;
+            last_logged_button_mask_ = button_mask;
+            RCLCPP_WARN(this->get_logger(),
+                        "F710 button decoded: code=0x%04X raw_mask=0x%016llX axes=%zu buttons=%zu",
+                        static_cast<unsigned>(button_data),
+                        static_cast<unsigned long long>(button_mask),
+                        msg->axes.size(),
+                        msg->buttons.size());
         }
     }
 
@@ -66,6 +78,7 @@ private:
         auto msg = geometry_msgs::msg::Twist();
         msg.linear.x = data.vx;
         msg.linear.y = data.vy;
+        msg.angular.x = data.right_y;
         msg.angular.z = data.omega;
         pub_chassis_->publish(msg);
     }

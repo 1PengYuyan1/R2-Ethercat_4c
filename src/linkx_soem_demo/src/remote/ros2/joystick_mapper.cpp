@@ -16,7 +16,7 @@ void JoystickMapper::setParams(float max_v, float max_w, float deadzone) {
 ChassisCommand JoystickMapper::processChassis(const std::vector<float>& axes, const std::vector<int>& buttons) {
     (void)buttons;
     const Struct_LogF710_Command remote_cmd = logf710_.Resolve_Chassis(axes);
-    ChassisCommand cmd = {remote_cmd.vx, remote_cmd.vy, remote_cmd.omega};
+    ChassisCommand cmd = {remote_cmd.vx, remote_cmd.vy, remote_cmd.omega, remote_cmd.right_y};
     return cmd;
 }
 

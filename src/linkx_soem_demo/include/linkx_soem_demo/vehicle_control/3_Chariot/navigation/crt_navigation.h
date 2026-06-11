@@ -24,7 +24,7 @@ enum Enum_Nav_Status {
 struct Struct_Waypoint {
     float x;           // 目标点 X 坐标 (mm)
     float y;           // 目标点 Y 坐标 (mm)
-    float yaw;         // 目标点 航向角 (度)
+    float yaw;         // 目标点航向角 (deg)
     float max_speed;   // 到达该点允许的最大线速度 (m/s)
     float pass_radius; // 切换判定半径 (mm)，距离小于此值即认为到达该点并切换下一个点
 };
@@ -42,7 +42,7 @@ public:
     void Init();
 
     void Set_Route(const Struct_Waypoint* route, uint8_t count);
-    // 设定目标坐标 (单位: mm, mm, 度)
+    // 设定目标坐标 (单位: mm, mm, deg)
     void Set_Target_Position(float target_x, float target_y, float target_yaw);
     // 启动与停止导航
     void Start_Navigation(float current_x, float current_y);
@@ -83,7 +83,7 @@ private:
 
     // 最终目标点判定容差
     float Final_Distance_Threshold = 10.0f; // mm (3厘米)
-    float Final_Yaw_Threshold = 2.0f;       // 度
+    float Final_Yaw_Threshold = 2.0f;       // deg
 
     // float Last_Robot_Vx = 0.0f;
     // float Last_Robot_Vy = 0.0f;

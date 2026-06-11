@@ -3,9 +3,6 @@
 //
 #include "dvc_motor_dm.h"
 #include "math.h"
-#include <chrono>
-#include <iomanip>
-#include <iostream>
 
 uint8_t DM_Motor_CAN_Message_Clear_Error[8] = {
 0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xfb
@@ -22,18 +19,6 @@ uint8_t DM_Motor_CAN_Message_Exit[8] = {
 uint8_t DM_Motor_CAN_Message_Save_Zero[8] = {
 0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xfe
 };
-
-/* Private function declarations ---------------------------------------------*/
-namespace
-{
-constexpr bool kDmDebugPrintEnable = false;
-constexpr uint64_t kDmDebugPrintPeriodMs = 100;
-inline uint64_t dm_now_ms()
-{
-    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count());
-}
-}
 
 /* Function prototypes -------------------------------------------------------*/
 
@@ -79,9 +64,14 @@ void Class_Motor_DM_Normal::Init(linkx_t *__LinkX_Handler, uint8_t __CAN_Channel
     DM_CAN_Rx_ID = __CAN_Rx_ID;
     Motor_DM_Control_Method = __Motor_DM_Control_Method;
     Radian_Max = __Angle_Max;
+    Feedback_Radian_Max = __Angle_Max;
     Omega_Max = __Omega_Max;
     Torque_Max = __Torque_Max;
     Current_Max = __Current_Max;
+
+    data = {};
+    Flag = 0;
+    Pre_Flag = 0;
 }
 
 /**
@@ -97,11 +87,23 @@ void Class_Motor_DM_Normal::CAN_RxCpltCallback(uint8_t *Rx_Data) {
 }
 
 /**
+ * @brief 按 Use_FDCAN_ 选择 FD(带 BRS) 或经典 CAN, 发送 8 字节到 DM_CAN_Tx_ID
+ *
+ */
+void Class_Motor_DM_Normal::CAN_Send_Frame(const uint8_t *__data) {
+    if (Use_FDCAN_) {
+        linkx_quick_FDcan_send(LinkX_Handler, CAN_Channel, DM_CAN_Tx_ID, __data);
+    } else {
+        linkx_quick_can_send(LinkX_Handler, CAN_Channel, DM_CAN_Tx_ID, __data);
+    }
+}
+
+/**
  * @brief 发送清除错误信息
  *
  */
 void Class_Motor_DM_Normal::CAN_Send_Clear_Error() {
-linkx_quick_can_send(LinkX_Handler, CAN_Channel, DM_CAN_Tx_ID, DM_Motor_CAN_Message_Clear_Error);
+CAN_Send_Frame(DM_Motor_CAN_Message_Clear_Error);
 }
 
 /**
@@ -110,7 +112,7 @@ linkx_quick_can_send(LinkX_Handler, CAN_Channel, DM_CAN_Tx_ID, DM_Motor_CAN_Mess
  */
 void Class_Motor_DM_Normal::CAN_Send_Enter() {
 
-    linkx_quick_can_send(LinkX_Handler, CAN_Channel, DM_CAN_Tx_ID, DM_Motor_CAN_Message_Enter);
+    CAN_Send_Frame(DM_Motor_CAN_Message_Enter);
 }
 
 /**
@@ -118,7 +120,7 @@ void Class_Motor_DM_Normal::CAN_Send_Enter() {
  *
  */
 void Class_Motor_DM_Normal::CAN_Send_Exit() {
-    linkx_quick_can_send(LinkX_Handler, CAN_Channel, DM_CAN_Tx_ID, DM_Motor_CAN_Message_Exit);
+    CAN_Send_Frame(DM_Motor_CAN_Message_Exit);
 }
 
 /**
@@ -126,7 +128,7 @@ void Class_Motor_DM_Normal::CAN_Send_Exit() {
  *
  */
 void Class_Motor_DM_Normal::CAN_Send_Save_Zero() {
-    linkx_quick_can_send(LinkX_Handler, CAN_Channel, DM_CAN_Tx_ID, DM_Motor_CAN_Message_Save_Zero);
+    CAN_Send_Frame(DM_Motor_CAN_Message_Save_Zero);
 }
 
 /**
@@ -154,8 +156,7 @@ void Class_Motor_DM_Normal::TIM_Alive_PeriodElapsedCallback() {
  */
 void Class_Motor_DM_Normal::TIM_Send_PeriodElapsedCallback() {
 
-    if (data.Control_Status == Motor_DM_Control_Status_ENABLE) {
-        // 电机在线, 正常控制
+    auto send_control_frame = [&]() {
         Math_Constrain(&Control_Radian, -Radian_Max, Radian_Max);
         Math_Constrain(&Control_Omega, -Omega_Max, Omega_Max);
         Math_Constrain(&Control_Torque, -Torque_Max, Torque_Max);
@@ -164,6 +165,13 @@ void Class_Motor_DM_Normal::TIM_Send_PeriodElapsedCallback() {
         Math_Constrain(&K_D, 0.0f, 5.0f);
 
         Output();
+    };
+
+    if (Force_Output_Without_Feedback_) {
+        send_control_frame();
+    } else if (data.Control_Status == Motor_DM_Control_Status_ENABLE) {
+        // 电机在线, 正常控制
+        send_control_frame();
     } else if (data.Control_Status == Motor_DM_Control_Status_DISABLE) {
         // 电机可能掉线, 使能电机
         CAN_Send_Enter();
@@ -194,28 +202,40 @@ void Class_Motor_DM_Normal::Data_Process(uint8_t *rx_data) {
     tmp_omega = (tmp_buffer->Omega_11_4 << 4) | (tmp_buffer->Omega_3_0_Torque_11_8 >> 4);
     tmp_torque = ((tmp_buffer->Omega_3_0_Torque_11_8 & 0x0f) << 8) | tmp_buffer->Torque_7_0;
     data.Control_Status = static_cast<Enum_Motor_DM_Control_Status_Normal>(tmp_buffer->Control_Status_Enum);
+    data.Raw_Angle_Encoder = tmp_encoder;
+    data.Raw_Omega_Encoder = tmp_omega;
+    data.Raw_Torque_Encoder = tmp_torque;
+
+    // DM 反馈位置按 16-bit 映射到反馈半区间 [-Feedback_Radian_Max,+Feedback_Radian_Max]。
+    // Feedback_Radian_Max 默认等于控制 Pmax；减速电机反馈单圈范围与控制 Pmax 不一致时需单独设置。
+    const float range_rad = 2.0f * Feedback_Radian_Max;
+    data.current_single_rad = -Feedback_Radian_Max + (tmp_encoder / 65535.0f) * range_rad;
 
     if (data.First_Update_Flag == 0) {
         data.Pre_Encoder = tmp_encoder;
+        data.Total_Round = 0;
         data.First_Update_Flag = 1;
     }
 
-    // 编码器展开（连续角度）
-    delta_encoder = static_cast<int32_t>(tmp_encoder) - static_cast<int32_t>(data.Pre_Encoder);
-    if (delta_encoder < -(1 << 15)) {
-        data.Total_Round++;
-    } else if (delta_encoder > (1 << 15)) {
-        data.Total_Round--;
+    if (Position_Unwrap_Enable_) {
+        // 可选连续展开：仅用于确实需要跨 Pmax 边界累计位置的场景。
+        delta_encoder = static_cast<int32_t>(tmp_encoder) - static_cast<int32_t>(data.Pre_Encoder);
+        if (delta_encoder < -(1 << 15)) {
+            data.Total_Round++;
+        } else if (delta_encoder > (1 << 15)) {
+            data.Total_Round--;
+        }
+        data.Total_Encoder =
+            data.Total_Round * (1 << 16) +
+            static_cast<int32_t>(tmp_encoder) -
+            ((1 << 15) - 1);
+        data.Now_Rad = (data.Total_Round * range_rad) + data.current_single_rad;
+    } else {
+        data.Total_Round = 0;
+        data.Total_Encoder = static_cast<int32_t>(tmp_encoder) - ((1 << 15) - 1);
+        data.Now_Rad = data.current_single_rad;
     }
-    data.Total_Encoder = data.Total_Round * (1 << 16) + static_cast<int32_t>(tmp_encoder) - ((1 << 15) - 1);
 
-    // 一个完整周期的弧度长度
-    float range_rad = 2.0f * Radian_Max;
-
-    // 电机轴角度（连续）
-    data.current_single_rad = -Radian_Max + (tmp_encoder / 65535.0f) * range_rad;
-    // 最终位置 = 圈数补偿 + 当前单圈位置
-    data.Now_Rad = (data.Total_Round * range_rad) + data.current_single_rad;
     // 速度 & 力矩  & 温度
     // 修复：反馈协议是双向 12-bit (0..4095 映射 -Vmax..+Vmax)，
     //       原 (0x7ff,0xFFF→0,Vmax) 会把负向截断为 0。
@@ -228,27 +248,6 @@ void Class_Motor_DM_Normal::Data_Process(uint8_t *rx_data) {
     float steering_rad = data.Now_Rad / 3.5f;
     data.Now_Wheel_Rad = Math_Modulus_Normalization(steering_rad, 2.0f * PI);
     data.Now_Steer_Rad = data.Now_Wheel_Rad;
-
-    static uint64_t s_last_print_ms[16] = {0};
-    const uint8_t motor_slot = static_cast<uint8_t>(DM_CAN_Rx_ID & 0x0FU);
-    const uint64_t now_ms = dm_now_ms();
-    if (kDmDebugPrintEnable && motor_slot < 16 &&
-        (now_ms - s_last_print_ms[motor_slot]) >= kDmDebugPrintPeriodMs)
-    {
-        std::cout << "[DM] rx_id=0x" << std::hex << static_cast<int>(DM_CAN_Rx_ID)
-                  << " tx_id=0x" << static_cast<int>(DM_CAN_Tx_ID) << std::dec
-                  << std::fixed << std::setprecision(3)
-                  << " rad=" << data.Now_Rad
-                  << " omega=" << data.Now_Omega
-                  << " torque=" << data.Now_Torque
-                  << " status=" << static_cast<int>(data.Control_Status)
-                  << " mos_K=" << data.Now_MOS_Temperature
-                  << " rotor_K=" << data.Now_Rotor_Temperature
-                  << " enc=" << tmp_encoder
-                  << " round=" << data.Total_Round
-                  << std::endl;
-        s_last_print_ms[motor_slot] = now_ms;
-    }
 }
 
 /**
@@ -277,7 +276,7 @@ void Class_Motor_DM_Normal::Output() {
             tmp_buffer->K_D_3_0_Control_Torque_11_8 = ((tmp_k_d & 0x0f) << 4) | (tmp_torque >> 8);
             tmp_buffer->Control_Torque_7_0 = tmp_torque & 0xff;
 
-            linkx_quick_can_send(LinkX_Handler, CAN_Channel, DM_CAN_Tx_ID, Tx_Data);
+            CAN_Send_Frame(Tx_Data);
 
             break;
         }
@@ -287,7 +286,7 @@ void Class_Motor_DM_Normal::Output() {
             tmp_buffer->Control_Angle = Control_Radian;
             tmp_buffer->Control_Omega = Control_Omega;
 
-                linkx_quick_can_send(LinkX_Handler, CAN_Channel, DM_CAN_Tx_ID, Tx_Data);
+                CAN_Send_Frame(Tx_Data);
 
             break;
         }
@@ -296,7 +295,7 @@ void Class_Motor_DM_Normal::Output() {
 
             tmp_buffer->Control_Omega = Control_Omega;
 
-                linkx_quick_can_send(LinkX_Handler, CAN_Channel, DM_CAN_Tx_ID, Tx_Data);
+                CAN_Send_Frame(Tx_Data);
 
             break;
         }
@@ -307,7 +306,7 @@ void Class_Motor_DM_Normal::Output() {
             tmp_buffer->Control_Omega = (uint16_t) (Control_Omega * 100.0f);
             tmp_buffer->Control_Current = (uint16_t) (Control_Current / Current_Max * 10000.0f);
 
-            linkx_quick_can_send(LinkX_Handler, CAN_Channel, DM_CAN_Tx_ID, Tx_Data);
+            CAN_Send_Frame(Tx_Data);
 
             break;
         }
@@ -349,9 +348,6 @@ void Class_Motor_DM_Normal::Begin_Friction_Calibration(float omega_target_rad_s,
                                  /*kp=*/0.0f,
                                  /*kd=*/friction_kd_);
 
-    std::cout << "[CALIB] Friction: omega=" << omega_target_rad_s
-              << " rad/s  kd=" << kd_velocity_loop
-              << "  warmup=" << warmup_s << "s  measure=" << measure_s << "s\n";
 }
 
 void Class_Motor_DM_Normal::Begin_Stiction_Calibration(float torque_step_nm,
@@ -377,9 +373,6 @@ void Class_Motor_DM_Normal::Begin_Stiction_Calibration(float torque_step_nm,
     Set_Control_Method(Motor_DM_Control_Method_NORMAL_MIT);
     Set_Control_Maintain_Postion(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
 
-    std::cout << "[CALIB] Stiction: step=" << torque_step_nm
-              << " Nm  dwell=" << dwell_s << "s  thresh=" << omega_threshold_rad_s
-              << " rad/s  Tmax=" << torque_max_nm << " Nm\n";
 }
 
 void Class_Motor_DM_Normal::Begin_Inertia_Calibration(float torque_step_nm,
@@ -407,9 +400,6 @@ void Class_Motor_DM_Normal::Begin_Inertia_Calibration(float torque_step_nm,
     Set_Control_Method(Motor_DM_Control_Method_NORMAL_MIT);
     Set_Control_Maintain_Postion(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
 
-    std::cout << "[CALIB] Inertia: T_step=" << torque_step_nm
-              << " Nm  friction=" << friction_torque_known_nm
-              << " Nm  warmup=" << warmup_s << "s  accel=" << accel_duration_s << "s\n";
 }
 
 void Class_Motor_DM_Normal::Stop_Calibration()
@@ -513,10 +503,6 @@ void Class_Motor_DM_Normal::Calibration_Tick(float dt_s)
                         calib_result_.finished = true;
                         // 停转
                         Set_Control_Maintain_Postion(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
-                        std::cout << "[CALIB][FRICTION] T+=" << t_pos
-                                  << " Nm  T-=" << t_neg
-                                  << " Nm  avg=" << calib_result_.friction_torque_avg_nm
-                                  << " Nm  (omega+=" << w_pos << " omega-=" << w_neg << ")\n";
                     }
                     break;
                 default:
@@ -541,8 +527,6 @@ void Class_Motor_DM_Normal::Calibration_Tick(float dt_s)
                 calib_result_.success = true;
                 calib_result_.finished = true;
                 Set_Control_Maintain_Postion(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
-                std::cout << "[CALIB][STICTION] breakaway T=" << stiction_current_torque_
-                          << " Nm at omega=" << data.Now_Omega << " rad/s\n";
                 break;
             }
 
@@ -556,8 +540,6 @@ void Class_Motor_DM_Normal::Calibration_Tick(float dt_s)
                     calib_result_.success = false;
                     calib_result_.finished = true;
                     Set_Control_Maintain_Postion(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
-                    std::cout << "[CALIB][STICTION] FAILED: T_max=" << stiction_torque_max_
-                              << " Nm reached without breakaway\n";
                 }
             }
             break;
@@ -613,9 +595,6 @@ void Class_Motor_DM_Normal::Calibration_Tick(float dt_s)
                         calib_result_.finished = true;
                         // 停力矩
                         Set_Control_Maintain_Postion(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
-                        std::cout << "[CALIB][INERTIA] alpha=" << alpha
-                                  << " rad/s²  T_net=" << net_torque
-                                  << " Nm  J=" << J << " kg·m²  (samples=" << inertia_n_ << ")\n";
                     }
                     break;
                 }

@@ -7,11 +7,6 @@
 #include "math.h"
 #include <cmath>
 
-extern "C" {
-#include "ramp.h"   // f_Ramp_Calc：线性斜坡滤波，用于速度命令整形
-}
-
-
 #define STEER_NUM 4
 
 /* 轮子半径（m） */

@@ -4,7 +4,8 @@
 
 namespace
 {
-constexpr uint32_t kStartLongPressMs = 500;
+constexpr uint32_t kStartEnableLongPressMs = 2000;
+constexpr uint32_t kStartDisableLongPressMs = 500;
 constexpr uint32_t kBackLongPressMs = 100;
 
 bool Is_Button_Pressed(const std::vector<int> &buttons, size_t idx)
@@ -79,6 +80,7 @@ Struct_LogF710_Command Class_LogF710::Resolve_Chassis(const std::vector<float> &
         float vx_axis = axes[1];
         float vy_axis = axes[0];
         float omega_axis = axes[2];
+        float right_y_axis = 0.0f;
         if (axes.size() > 3U)
         {
             const bool dinput_like = (axes.size() == 6U);
@@ -91,10 +93,15 @@ Struct_LogF710_Command Class_LogF710::Resolve_Chassis(const std::vector<float> &
                 {
                     omega_axis = axes[3];
                 }
+                right_y_axis = axes[3];
             }
             else
             {
                 omega_axis = axes[3];
+                if (axes.size() > 4U)
+                {
+                    right_y_axis = axes[4];
+                }
             }
         }
 
@@ -114,6 +121,7 @@ Struct_LogF710_Command Class_LogF710::Resolve_Chassis(const std::vector<float> &
         cmd.vx = Apply_Deadzone(vx_axis) * robot_velocity_max_;
         cmd.vy = Apply_Deadzone(vy_axis) * robot_velocity_max_;
         cmd.omega = Apply_Deadzone(omega_axis) * robot_rotation_max_;
+        cmd.right_y = Apply_Deadzone(right_y_axis) * robot_velocity_max_;
     }
 
     return cmd;
@@ -173,14 +181,22 @@ void Class_LogF710::Update_Control_Enable(uint16_t key_code, uint32_t dt_ms)
     if (key_code == LogF710_Key_Start)
     {
         start_press_ms_ += dt_ms;
-        if (start_press_ms_ >= kStartLongPressMs)
+        if (!start_action_taken_)
         {
-            is_ros_control_enabled_ = true;
+            const uint32_t threshold_ms = is_ros_control_enabled_
+                                          ? kStartDisableLongPressMs
+                                          : kStartEnableLongPressMs;
+            if (start_press_ms_ >= threshold_ms)
+            {
+                is_ros_control_enabled_ = !is_ros_control_enabled_;
+                start_action_taken_ = true;
+            }
         }
     }
     else
     {
         start_press_ms_ = 0;
+        start_action_taken_ = false;
     }
 
     if (key_code == LogF710_Key_Back)

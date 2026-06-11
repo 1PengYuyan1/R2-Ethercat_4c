@@ -1,4 +1,5 @@
 #include <iostream>
+#include <cstdio>
 #include <signal.h>
 #include <string>
 #include "task.h"
@@ -16,6 +17,8 @@ void signal_handler(int /*sig*/) {
 }
 
 int main(int argc, char *argv[]) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
 
     // 设置默认网卡名称 (根据你的实际情况修改，或通过参数传入)
     std::string ifname = "enp86s0"; 
@@ -28,10 +31,7 @@ int main(int argc, char *argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
-    std::cout << "===========================================" << std::endl;
-    std::cout << "   Robot Control System (EtherCAT/LinkX)   " << std::endl;
-    std::cout << "   Target Interface: " << ifname << std::endl;
-    std::cout << "===========================================" << std::endl;
+    std::cout << "[MAIN] Robot Control System (EtherCAT/LinkX), ifname=" << ifname << std::endl;
 
     // 启动机器人的核心控制任务
     // 该函数在 task.cpp 中实现，是阻塞运行的
@@ -42,7 +42,6 @@ int main(int argc, char *argv[]) {
         return -1;
     }
     
-    std::cout << "[MAIN] Program exited safely." << std::endl;
     return 0;
     
 }

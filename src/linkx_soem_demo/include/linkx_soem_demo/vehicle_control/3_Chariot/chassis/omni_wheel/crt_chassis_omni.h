@@ -6,10 +6,6 @@
 #include "math.h"
 #include <cmath>
 
-extern "C" {
-#include "ramp.h"
-}
-
 #define OMNI_WHEEL_NUM 4
 
 /* 轮子半径（m）= 152.2mm / 2 */
@@ -19,22 +15,39 @@ extern "C" {
 #define Omni_Wheel_To_Core_Distance_Define  0.24621f
 
 /* 整车最大线/角速度 */
-#define MAX_OMNI_CHASSIS_SPEED              2.0f
-#define MAX_OMNI_CHASSIS_OMEGA              6.0f
+#define MAX_OMNI_CHASSIS_SPEED              5.0f
+#define MAX_OMNI_CHASSIS_OMEGA              10.0f
 
-/* 速度命令斜坡（单位 m/s/ctrl-tick，2ms 控制周期下 0.01 ≈ 5 m/s²） */
-#define OMNI_ACC_LIN_RAMP                   0.01f
-#define OMNI_ACC_ANG_RAMP                   0.04f
+/* 底盘速度矢量斜坡：起步适中，停车/换向更快以保证遥控跟手 */
+#define OMNI_CHASSIS_LINEAR_ACCEL_LIMIT_M_S2 5.0f
+#define OMNI_CHASSIS_LINEAR_DECEL_LIMIT_M_S2 12.0f
+#define OMNI_CHASSIS_ANG_ACCEL_LIMIT_RAD_S2  16.0f
+#define OMNI_CHASSIS_ANG_DECEL_LIMIT_RAD_S2  32.0f
+
+/* 轮速梯形加减速参数（由 2026-06-08/09 架空测试结果收敛得到） */
+#define OMNI_WHEEL_PROFILE_DT               0.002f
+#define OMNI_WHEEL_ACCEL_LIMIT_RAD_S2       400.0f
+#define OMNI_WHEEL_DECEL_LIMIT_RAD_S2       650.0f
+#define OMNI_WHEEL_ACCEL_FILTER_ALPHA       0.25f
+#define OMNI_WHEEL_TORQUE_FF_LIMIT_NM       1.5f
+#define OMNI_WHEEL_RELIABLE_OMEGA_LIMIT     80.0f
 
 /**
  * @brief 全向轮单轮参数
  */
 struct OmniWheelParams
 {
+    float wheel_kp;                // MIT 模式位置环 Kp（当前扫参最佳为 0）
     float wheel_kd;                // MIT 模式速度环 Kd（粘性阻尼，越大跟得越紧、噪声越大）
     float wheel_direction;         // 轮向方向 (+1 或 -1)
     float wheel_speed_correction;  // 直行偏转微调系数（0.90 ~ 1.10）
     float wheel_omega_deadzone;    // 轮向速度死区
+    float wheel_stiction_torque;   // 起动/静摩擦补偿力矩 (N·m)
+    float wheel_dynamic_friction;  // 中低速动摩擦补偿力矩 (N·m)
+    float wheel_rotor_inertia;     // 轮向等效转动惯量 (kg·m²)
+    float wheel_feedforward_scale; // 静摩擦/惯量前馈比例
+    float wheel_accel_limit;       // 轮速梯形加速上限 (rad/s²)
+    float wheel_decel_limit;       // 轮速梯形减速/换向上限 (rad/s²)
 };
 
 /**
@@ -49,13 +62,13 @@ enum Enum_Chassis_Omni_Control_Type
 /**
  * @brief 全向轮底盘类（4 轮 X-布局）
  *
- * 轮位约定（俯视图，车头 +X，左侧 +Y）：
- *   index 0 → ID 1 → 左前  45°
- *   index 1 → ID 2 → 左后 135°
- *   index 2 → ID 3 → 右后 225°
- *   index 3 → ID 4 → 右前 315°
+ * 轮位约定（俯视图，新车头 +X，左侧 +Y；新车头为原车尾）：
+ *   index 0 → CAN1 ID 2 → 右后 225°（原左前）
+ *   index 1 → CAN0 ID 2 → 右前 315°（原左后）
+ *   index 2 → CAN0 ID 1 → 左前  45°（原右后）
+ *   index 3 → CAN1 ID 1 → 左后 135°（原右前）
  *
- * 全部 4 个 DM3519 在 LinkX channel 0，MIT 速度模式（位置 0、Kp 0、Kd 阻尼）。
+ * 4 个 DM3519 分布在 LinkX channel 0/1，MIT 速度模式（位置 0、Kp 0、Kd 阻尼）。
  */
 class Class_Chassis_Omni
 {
@@ -73,6 +86,13 @@ public:
     inline float Get_Target_Velocity_X();
     inline float Get_Target_Velocity_Y();
     inline float Get_Target_Omega();
+    inline float Get_Profiled_Target_Velocity_X();
+    inline float Get_Profiled_Target_Velocity_Y();
+    inline float Get_Profiled_Target_Omega();
+    inline float Get_Raw_Target_Wheel_Omega(int index);
+    inline float Get_Target_Wheel_Omega(int index);
+    inline float Get_Wheel_Command_Accel(int index);
+    inline float Get_Wheel_Accel_Filtered(int index);
 
     inline void Set_Chassis_Control_Type(Enum_Chassis_Omni_Control_Type __type);
     inline void Set_Target_Velocity_X(float __vx);
@@ -87,16 +107,16 @@ protected:
     const float Wheel_Radius           = Omni_Wheel_Radius_Define;
     const float Wheel_To_Core_Distance = Omni_Wheel_To_Core_Distance_Define;
 
-    /* X-布局：45° / 135° / 225° / 315° */
+    /* 新车体系 X-布局：原车体系整体旋转 180° */
     const float Wheel_Azimuth[OMNI_WHEEL_NUM] = {
-        (PI / 4.0f),         // ID 1 左前 45°
-        (3.0f * PI / 4.0f),  // ID 2 左后 135°
-        (5.0f * PI / 4.0f),  // ID 3 右后 225°
-        (7.0f * PI / 4.0f)   // ID 4 右前 315°
+        (5.0f * PI / 4.0f),  // index 0 右后 225°（原左前）
+        (7.0f * PI / 4.0f),  // index 1 右前 315°（原左后）
+        (PI / 4.0f),         // index 2 左前 45°（原右后）
+        (3.0f * PI / 4.0f)   // index 3 左后 135°（原右前）
     };
 
-    /* DM3519 输出轴最大角速度（rad/s） */
-    float MAX_WHEEL_OMEGA = 120.0f;
+    /* 实测可靠轮速上限（rad/s），高于该值 W0/W3 会先进入跟踪不足 */
+    float MAX_WHEEL_OMEGA = OMNI_WHEEL_RELIABLE_OMEGA_LIMIT;
 
     float Now_Velocity_X = 0.0f;
     float Now_Velocity_Y = 0.0f;
@@ -106,17 +126,24 @@ protected:
     float Target_Velocity_Y = 0.0f;
     float Target_Omega      = 0.0f;
 
-    /* 命令斜坡平滑（避免使能瞬间冲击） */
     float Ramped_Velocity_X = 0.0f;
     float Ramped_Velocity_Y = 0.0f;
     float Ramped_Omega      = 0.0f;
 
+    float Raw_Target_Wheel_Omega[OMNI_WHEEL_NUM] = {0.0f};
     float Target_Wheel_Omega[OMNI_WHEEL_NUM] = {0.0f};
+    float Last_Target_Wheel_Omega[OMNI_WHEEL_NUM] = {0.0f};
+    float Wheel_Command_Accel[OMNI_WHEEL_NUM] = {0.0f};
+    float Wheel_Accel_Filtered[OMNI_WHEEL_NUM] = {0.0f};
+    bool was_enabled_ = false;
+    uint16_t disable_exit_burst_ticks_ = 0;
 
     Enum_Chassis_Omni_Control_Type Chassis_Control_Type = Chassis_Omni_Control_Type_DISABLE;
 
     void Self_Resolution();
+    void Apply_Chassis_Trapezoid_Profile();
     void Kinematics_Inverse_Resolution();
+    void Apply_Wheel_Trapezoid_Profile();
     void Output_To_Motor();
     void _Reset_State();
 };
@@ -133,6 +160,25 @@ inline Enum_Chassis_Omni_Control_Type Class_Chassis_Omni::Get_Chassis_Control_Ty
 inline float Class_Chassis_Omni::Get_Target_Velocity_X() { return Target_Velocity_X; }
 inline float Class_Chassis_Omni::Get_Target_Velocity_Y() { return Target_Velocity_Y; }
 inline float Class_Chassis_Omni::Get_Target_Omega()      { return Target_Omega; }
+inline float Class_Chassis_Omni::Get_Profiled_Target_Velocity_X() { return Ramped_Velocity_X; }
+inline float Class_Chassis_Omni::Get_Profiled_Target_Velocity_Y() { return Ramped_Velocity_Y; }
+inline float Class_Chassis_Omni::Get_Profiled_Target_Omega()      { return Ramped_Omega; }
+inline float Class_Chassis_Omni::Get_Raw_Target_Wheel_Omega(int index)
+{
+    return (index >= 0 && index < OMNI_WHEEL_NUM) ? Raw_Target_Wheel_Omega[index] : 0.0f;
+}
+inline float Class_Chassis_Omni::Get_Target_Wheel_Omega(int index)
+{
+    return (index >= 0 && index < OMNI_WHEEL_NUM) ? Target_Wheel_Omega[index] : 0.0f;
+}
+inline float Class_Chassis_Omni::Get_Wheel_Command_Accel(int index)
+{
+    return (index >= 0 && index < OMNI_WHEEL_NUM) ? Wheel_Command_Accel[index] : 0.0f;
+}
+inline float Class_Chassis_Omni::Get_Wheel_Accel_Filtered(int index)
+{
+    return (index >= 0 && index < OMNI_WHEEL_NUM) ? Wheel_Accel_Filtered[index] : 0.0f;
+}
 
 inline void Class_Chassis_Omni::Set_Chassis_Control_Type(Enum_Chassis_Omni_Control_Type __type)
 {

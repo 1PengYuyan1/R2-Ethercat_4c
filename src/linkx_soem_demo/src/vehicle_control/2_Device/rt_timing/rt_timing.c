@@ -26,11 +26,10 @@ void analyze_loop_frequency(struct timespec start_ts, int warn_threshold_ns)
     if (dt_ns > max_dt_ns) max_dt_ns = dt_ns; 
     
     if (dt_ns > warn_threshold_ns) {
-        printf("[WARN] High Jitter! Loop took %" PRId64 " ns\n", dt_ns);
+        fprintf(stderr, "[RT][WARN] high jitter: loop=%" PRId64 " ns\n", dt_ns);
     }
     
     if (++loop_count >= 1000) {
-        printf("[DEBUG] PDO Thread ALIVE | Max Jitter in 1s: %" PRId64 " ns\n", max_dt_ns);
         max_dt_ns = 0; 
         loop_count = 0;
     }

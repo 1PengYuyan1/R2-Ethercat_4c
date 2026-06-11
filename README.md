@@ -1,13 +1,14 @@
 # Ethercat-R2 上位机控制栈
 
 基于 **SOEM / EtherCAT 主站 + LinkX-4C CAN 桥** 的 R2 整车 ROS 2 控制工作空间。
-PC 通过一张普通以太网卡跑 EtherCAT,经由 LinkX-4C 把 4 路经典 CAN 桥到舵向(DM6225)/ 轮向(DM3519)/ 升降(Gantry)/ 机械臂(Arm) 等设备。
-手柄(Logitech F710)通过 `joy` 解算成 `/cmd_vel` 与按键话题,再由 relay 转发给整车主控。
+PC 通过一张普通以太网卡跑 EtherCAT,经由 LinkX-4C 把 4 路经典 CAN 桥到舵向(DM6225)/ 轮向(DM3519)/ 升降等设备。
+手柄(Logitech F710)通过 `joy` 解算成 `/chassis/remote_cmd_vel` 与 `/robot_buttons`。
+上层速度 `/cmd_vel` 经 relay 转发到高优先级 `/chassis/cmd_vel`，遥控速度作为低优先级兜底输入。
 
 - 平台:Ubuntu + ROS 2 Humble
 - 主语言:C / C++17
 - 默认控制入口:`./start_upper_computer.sh`
-- 默认 EtherCAT 网卡:`enxf01e341224fd`
+- 默认 EtherCAT 网卡:`enp86s0`
 
 ---
 
@@ -17,23 +18,20 @@ PC 通过一张普通以太网卡跑 EtherCAT,经由 LinkX-4C 把 4 路经典 CA
 Logitech F710
     │
     ▼
-joy_node ──► remote_node_cpp ──► /cmd_vel, /robot_buttons
-                                      │
-                                      ▼
-                              stm32_node_cpp(chassis_relay)
-                                      │
-                                      ▼
-                            /chassis/cmd_vel, /chassis/buttons
-                                      │
-                                      ▼
-linkx_soem_demo(vehicle_control) ──► EtherCAT ──► LinkX-4C ──► CAN1~CAN4 ──► 电机/升降/机械臂
+joy_node ──► remote_node_cpp ──► /chassis/remote_cmd_vel ─────┐
+                              └─► /robot_buttons ─────────────┤
+上层规划 /cmd_vel ──► stm32_node_cpp(chassis_relay) ───────────┤
+                              └─► /chassis/cmd_vel(高优先级)  │
+                              └─► /chassis/buttons            │
+                                                               ▼
+linkx_soem_demo(vehicle_control) ──► EtherCAT ──► LinkX-4C ──► CAN1~CAN4 ──► 电机/升降
 ```
 
 核心思路:
 
 - ROS 2 层只负责手柄、上层速度指令、话题转发与参数管理。
 - `linkx_soem_demo` 是实时性要求最高的整车主控入口,负责 EtherCAT 初始化、LinkX-4C CAN 桥接和各机构调度。
-- 上层规划/导航可以直接发布 `/cmd_vel`,也可以绕过手柄链路直接发布 `/chassis/cmd_vel`。
+- 上层规划/导航可以发布 `/cmd_vel` 经 relay 转发,也可以直接发布 `/chassis/cmd_vel`；该速度优先级高于遥控 `/chassis/remote_cmd_vel`。
 
 ## EtherCAT 相关知识
 
@@ -86,17 +84,20 @@ flowchart TD
 flowchart LR
     A[F710 手柄] --> B[joy_node]
     B --> C[remote_node_cpp]
-    C --> D[/cmd_vel 和 /robot_buttons]
-    D --> E[stm32_node_cpp: chassis_relay]
-    E --> F[/chassis/cmd_vel 和 /chassis/buttons]
-    F --> G[vehicle_control 订阅 ROS 指令]
+    C --> D["/chassis/remote_cmd_vel"]
+    C --> E["/robot_buttons"]
+    P["上层规划 /cmd_vel"] --> R[stm32_node_cpp: chassis_relay]
+    E --> R
+    R --> F["/chassis/cmd_vel 和 /chassis/buttons"]
+    D --> G[vehicle_control 订阅 ROS 指令]
+    F --> G
     G --> H[robot/task 顶层调度]
-    H --> I[chassis/gantry/arm/navigation]
+    H --> I[chassis/lift/navigation]
     I --> J[Motor/OPS/LinkX 设备层]
     J --> K[SOEM EtherCAT 周期帧]
     K --> L[LinkX-4C]
     L --> M[CAN1~CAN4]
-    M --> N[DM 电机/升降/机械臂等设备]
+    M --> N[DM 电机/升降等设备]
     N --> M
     M --> L
     L --> K
@@ -154,13 +155,12 @@ Ethercat-R2/
         │   │   ├── main.cpp
         │   │   ├── 1_Middleware/       # SOEM / LinkX / Algorithm(PID, ramp)
         │   │   ├── 2_Device/           # Ethercat / Motor / OPS / rt_timing
-        │   │   ├── 3_Chariot/          # chassis / gantry / arm / navigation
+        │   │   ├── 3_Chariot/          # chassis / lift / navigation
         │   │   ├── 4_Interaction/      # robot
         │   │   └── 5_Task/             # task 顶层调度
         │   ├── remote/                 # 手柄解算 + 串口/话题转发
         │   │   ├── ros2/               # remote_node / stm32_node / joystick_mapper
         │   │   └── device/Remote/      # F710 手柄驱动
-        │   └── test_mains/             # 独立工具(标定 / 调参 / 链路测试)
         ├── include/
         └── CMakeLists.txt
 ```
@@ -173,7 +173,7 @@ Ethercat-R2/
 | --- | --- | --- |
 | `1_Middleware` | 第三方/底层通信与通用算法 | SOEM、LinkX 协议、PID、ramp、数学工具 |
 | `2_Device` | 单设备驱动与 EtherCAT 管理 | `Ethercat/ecat_manager`、`linkx4c_handler`、DM 电机、OPS、实时计时 |
-| `3_Chariot` | 机构级控制 | 全向/舵轮底盘、升降、机械臂、导航接口 |
+| `3_Chariot` | 机构级控制 | 全向/舵轮底盘、升降、导航接口 |
 | `4_Interaction` | 机器人交互封装 | `robot` 对 ROS 话题和机构状态的整合 |
 | `5_Task` | 顶层任务调度 | 初始化顺序、周期任务、状态流转 |
 
@@ -235,8 +235,8 @@ sudo setcap cap_net_raw,cap_net_admin+ep \
 运行前建议先确认网卡存在并处于 up 状态:
 
 ```bash
-ip link show enxf01e341224fd
-sudo ip link set enxf01e341224fd up
+ip link show enp86s0
+sudo ip link set enp86s0 up
 ```
 
 ---
@@ -246,7 +246,7 @@ sudo ip link set enxf01e341224fd up
 ### 一键脚本
 
 ```bash
-# 默认:网卡 enxf01e341224fd,sudo 启动,max_speed=1.5
+# 默认:网卡 enp86s0,sudo 启动
 ./start_upper_computer.sh
 
 # 指定网卡
@@ -258,16 +258,13 @@ sudo ip link set enxf01e341224fd up
 # 同时启动云台话题转发
 ./start_upper_computer.sh --gimbal
 
-# 限速
-./start_upper_computer.sh --max-speed 1.0
 ```
 
 ### 直接 launch
 
 ```bash
 ros2 launch linkx_bringup full_system.launch.py \
-    ifname:=enxf01e341224fd \
-    max_speed:=1.5 \
+    ifname:=enp86s0 \
     start_vehicle_control:=true \
     start_gimbal_bridge:=false
 ```
@@ -276,8 +273,7 @@ ros2 launch linkx_bringup full_system.launch.py \
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `ifname` | `enxf01e341224fd` | EtherCAT 网卡名 |
-| `max_speed` | `1.5` | 手柄映射到 `/cmd_vel` 的最大线速度 |
+| `ifname` | `enp86s0` | EtherCAT 网卡名 |
 | `start_vehicle_control` | `true` | 是否启动 EtherCAT 整车主控 |
 | `start_gimbal_bridge` | `false` | 是否启动云台话题转发 |
 | `vehicle_prefix` | 空 | 给整车主控加启动前缀,常用于 `sudo -E env LD_LIBRARY_PATH=$LD_LIBRARY_PATH` |
@@ -286,14 +282,13 @@ ros2 launch linkx_bringup full_system.launch.py \
 启动后的节点拓扑:
 
 ```
-joy_node ──► /joy ──► remote_node ──► /cmd_vel ─────┐
-                                  └─► /robot_buttons┤
-                                                     ▼
-                                          chassis_relay ──► /chassis/cmd_vel
-                                                        └─► /chassis/buttons
-                                                                │
-                                                                ▼
-                                                  vehicle_control(EtherCAT 主控)
+joy_node ──► /joy ──► remote_node ──► /chassis/remote_cmd_vel ─┐
+                                  └─► /robot_buttons ───────────┤
+上层规划 /cmd_vel ─────────────────► chassis_relay ─────────────┤
+                                         └─► /chassis/cmd_vel    │
+                                         └─► /chassis/buttons    │
+                                                                 ▼
+                                                   vehicle_control(EtherCAT 主控)
 ```
 
 ---
@@ -304,14 +299,9 @@ joy_node ──► /joy ──► remote_node ──► /cmd_vel ─────
 
 | 可执行 | 用途 |
 | --- | --- |
-| `linkx_soem_demo` | **整车主控**:SOEM 主站 + LinkX-4C CAN 桥 + chassis/gantry/arm/navigation 调度 |
-| `remote_node_cpp` | 手柄解算:`/joy` → `/cmd_vel` + `/robot_buttons` |
+| `linkx_soem_demo` | **整车主控**:SOEM 主站 + LinkX-4C CAN 桥 + chassis/lift/navigation 调度 |
+| `remote_node_cpp` | 手柄解算:`/joy` → `/chassis/remote_cmd_vel` + `/robot_buttons` |
 | `stm32_node_cpp` | 通用话题转发(参数化输入/输出话题,可复用做 chassis_relay / gimbal_relay) |
-| `linkx_set_alias` | LinkX EEPROM Station Alias 写入工具(脱离物理串接顺序) |
-| `can_link_test` | 4 通道经典 CAN 1Mbps 链路冒烟测试 |
-| `motor_calib` | DM6225 / DM3519 电机参数标定(动/静摩擦、惯量) |
-| `steer_tuning` | 舵向 PID 网格自动扫参,输出 `var_data/steer_tuning_results.csv` |
-| `robot_test` | 整车回归(Init / EtherCAT / TIM / ROS 桥 / 限速短转 / Gantry / Arm) |
 
 ---
 
@@ -333,61 +323,15 @@ joy_node ──► /joy ──► remote_node ──► /cmd_vel ─────
 
 3. 确认 LinkX-4C 已上电、网线连接到专用 EtherCAT 网卡。
 
-4. 确认危险机构处于安全状态,尤其是轮向标定时必须架空目标轮。
+4. 确认危险机构处于安全状态。
 
 5. 首次联调建议先使用 `--no-vehicle` 检查 ROS 话题链路:
 
    ```bash
    ./start_upper_computer.sh --no-vehicle
-   ros2 topic echo /cmd_vel
+   ros2 topic echo /chassis/remote_cmd_vel
    ros2 topic echo /chassis/cmd_vel
    ```
-
----
-
-## 常用工具用法
-
-### 写入 LinkX Station Alias(R2 建议 `alias=2`)
-```bash
-sudo ./linkx_set_alias enxf01e341224fd show
-sudo ./linkx_set_alias enxf01e341224fd set <slave_idx> <alias>
-# ⚠ 写完必须给 LinkX 断电再上电,aliasadr 才生效
-```
-
-### CAN 链路冒烟
-```bash
-sudo ./can_link_test enxf01e341224fd
-```
-
-### DM 电机标定
-```bash
-# 舵向 DM6225:不需要架空,但解除负载/机械臂归位
-sudo IFNAME=enxf01e341224fd ./motor_calib --motor steer --wheel 0 --test all
-
-# 轮向 DM3519:必须把目标轮架空
-sudo IFNAME=enxf01e341224fd ./motor_calib --motor wheel --wheel 0 --test all
-```
-
-### 舵向 PID 扫参
-```bash
-sudo ./steer_tuning enxf01e341224fd
-# 进入交互后按 'a' 进入 AUTO_SWEEP,或 export TUNE_AUTO=1
-```
-
-扫参结果默认写入 `var_data/steer_tuning_results.csv`,可用于对比不同 PID 组合的误差、超调和稳定时间。
-
-### 整车回归
-```bash
-sudo ./robot_test enxf01e341224fd
-```
-
-建议工具执行顺序:
-
-1. `linkx_set_alias show`:确认 LinkX 站号和 alias。
-2. `can_link_test`:确认 4 路 CAN 链路可达。
-3. `motor_calib`:完成单电机基础标定。
-4. `steer_tuning`:完成舵向闭环参数调整。
-5. `robot_test`:做整车主控回归。
 
 ---
 
@@ -396,28 +340,29 @@ sudo ./robot_test enxf01e341224fd
 | 话题 | 类型 | 方向 |
 | --- | --- | --- |
 | `/joy` | `sensor_msgs/Joy` | `joy_node` 发布 |
-| `/cmd_vel` | `geometry_msgs/Twist` | `remote_node` 发布,任意上层节点也可发布 |
-| `/robot_buttons` | `std_msgs/...` | `remote_node` 发布 |
-| `/chassis/cmd_vel` | `geometry_msgs/Twist` | `chassis_relay` 转发,主控订阅 |
-| `/chassis/buttons` | 同上 | 同上 |
+| `/cmd_vel` | `geometry_msgs/Twist` | 上层规划/导航发布,由 chassis_relay 转发到 `/chassis/cmd_vel` |
+| `/chassis/remote_cmd_vel` | `geometry_msgs/Twist` | `remote_node` 发布,主控低优先级订阅 |
+| `/robot_buttons` | `std_msgs/UInt16` | `remote_node` 发布 |
+| `/chassis/cmd_vel` | `geometry_msgs/Twist` | 高优先级速度入口,主控订阅 |
+| `/chassis/buttons` | `std_msgs/UInt16` | `chassis_relay` 转发,主控订阅 |
 | `/gimbal/cmd_vel`、`/gimbal/buttons` | 同上 | 可选(`--gimbal`) |
 
-> 任何外部规划/导航节点可以直接发布 `/cmd_vel`(与手柄共用入口),或绕过手柄直接发布 `/chassis/cmd_vel`。
+> 任何外部规划/导航节点可以发布 `/cmd_vel` 经 relay 进入主控,或绕过 relay 直接发布 `/chassis/cmd_vel`。只要该高优先级速度在 200ms 内更新,主控就会覆盖遥控速度；超时后才回落到 `/chassis/remote_cmd_vel`。
 
 速度指令约定:
 
-- `/cmd_vel.linear.x`:底盘前后速度。
-- `/cmd_vel.linear.y`:全向底盘横移速度。
-- `/cmd_vel.angular.z`:底盘旋转角速度。
-- `remote_node_cpp` 会按 `max_speed` 限制手柄输入幅度。
+- `/cmd_vel.linear.x` / `/chassis/cmd_vel.linear.x`:底盘前后速度。
+- `/cmd_vel.linear.y` / `/chassis/cmd_vel.linear.y`:全向底盘横移速度。
+- `/cmd_vel.angular.z` / `/chassis/cmd_vel.angular.z`:底盘旋转角速度。
+- `remote_node_cpp` 会按底盘最大速度/角速度常量限制手柄输入幅度。
 
 ---
 
 ## 配置入口
 
-- 默认网卡:`start_upper_computer.sh` 中 `IFNAME=enxf01e341224fd`,或 `--ifname` / 环境变量 `IFNAME` 覆盖
+- 默认网卡:`start_upper_computer.sh` 中 `IFNAME=enp86s0`,或 `--ifname` / 环境变量 `IFNAME` 覆盖
 - 手柄死区 / 自动重复率:`full_system.launch.py` 中 `joy_node` 参数
-- 最大线速度:`remote_node` 的 `max_speed` 参数,或 `--max-speed`
+- 遥控输出话题:`full_system.launch.py` 中 `remote_node_cpp` 的 `cmd_topic` / `buttons_topic` 参数
 - FastRTPS profile:`src/linkx_bringup/config/fastrtps_profiles.xml`
 - relay 输入/输出话题:`full_system.launch.py` 中 `stm32_node_cpp` 的参数
 
@@ -430,8 +375,7 @@ sudo ./robot_test enxf01e341224fd
 | 启动报 `Failed to open interface` | 网卡名错 / 被其他进程占用 / 没有 raw 权限(`sudo` 或 `setcap`) |
 | `slave count = 0` | LinkX 没上电、网线串接顺序异常、或 alias 未写入 |
 | 手柄不动 | `ros2 topic echo /joy` 看 `joy_node` 是否在发,确认 F710 拨到 `D` 档 |
-| 主控启动但底盘无响应 | `ros2 topic echo /chassis/cmd_vel`,检查 `chassis_relay` 是否在转发 |
-| DM 电机抖动 / 过冲 | 用 `steer_tuning` 重新扫参,先 `motor_calib` 标定摩擦/惯量 |
+| 主控启动但底盘无响应 | `ros2 topic echo /robot_buttons` 和 `/chassis/buttons`,确认 START 是否被转发到主控 |
 | `setcap` 后仍提示权限不足 | 确认可执行文件是最新构建产物,重新执行 `setcap` |
 | `colcon build` 找不到 ROS 包 | 先 `source /opt/ros/humble/setup.bash`,并确认当前目录是工作空间根目录 |
 
@@ -439,7 +383,6 @@ sudo ./robot_test enxf01e341224fd
 
 ## 安全注意事项
 
-- 调试电机、底盘、升降或机械臂前,确保急停、支撑和限位有效。
-- 轮向电机标定必须架空目标轮,避免车辆突然运动。
+- 调试电机、底盘或升降前,确保急停、支撑和限位有效。
 - 修改 PID、摩擦补偿、速度上限后,先低速空载验证,再上车联调。
 - EtherCAT 主控建议使用专用网卡,避免系统网络服务打断实时通信。

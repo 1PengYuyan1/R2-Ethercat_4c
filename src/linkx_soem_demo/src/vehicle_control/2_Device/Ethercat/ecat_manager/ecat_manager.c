@@ -29,26 +29,25 @@ bool ecat_master_init(ecat_master_t *master, const char *ifname)
     master->consecutive_wkc_errors = 0;
     master->is_running = false;
 
-    printf("[ECAT] Initializing adapter %s...\n", ifname);
+    printf("[ECAT] init: adapter=%s\n", ifname);
     if (!ecx_init(&master->ctx, ifname))
     {
-        printf("[ERROR] Failed to init adapter %s\n", ifname);
+        printf("[ECAT][ERROR] failed to init adapter %s\n", ifname);
         return false;
     }
 
     if (ecx_config_init(&master->ctx) <= 0)
     {
-        printf("[ERROR] No slaves found on the bus!\n");
+        printf("[ECAT][ERROR] no slaves found on the bus\n");
         return false;
     }
-
-    printf("[ECAT] %d slaves found and configured.\n", master->ctx.slavecount);
 
     // 1. 映射 IO 数据 (告诉系统报文有多长)
     ecx_config_map_group(&master->ctx, master->iomap, 0);
     master->expected_wkc = (master->ctx.grouplist[0].outputsWKC * 2) +
                            master->ctx.grouplist[0].inputsWKC;
-    printf("[ECAT] Expected WKC=%d (outputs=%u inputs=%u)\n",
+    printf("[ECAT] slaves=%d expected_wkc=%d (out=%u in=%u)\n",
+           master->ctx.slavecount,
            master->expected_wkc,
            master->ctx.grouplist[0].outputsWKC,
            master->ctx.grouplist[0].inputsWKC);
@@ -73,7 +72,7 @@ bool ecat_master_init(ecat_master_t *master, const char *ifname)
     int state = ecx_statecheck(&master->ctx, 0, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE * 2);
     if (state != EC_STATE_SAFE_OP)
     {
-        printf("[ERROR] Not all slaves reached SAFE_OP (state=0x%x)\n", state);
+        printf("[ECAT][ERROR] not all slaves reached SAFE_OP (state=0x%x)\n", state);
         ecat_dump_slave_states(master);
         return false;
     }
@@ -115,7 +114,7 @@ int ecat_master_sync(ecat_master_t *master)
 // 安全切换到 OP 状态（含看门狗预热逻辑）
 bool ecat_master_bring_online(ecat_master_t *master)
 {
-    printf("[ECAT] Requesting OP state for all slaves...\n");
+    printf("[ECAT] state: requesting OP\n");
 
     // 按 SOEM 推荐流程：先交换若干帧过程数据，避免 SAFE_OP->OP 时输出无效导致拒绝切换
     for (int i = 0; i < 5; i++)
@@ -139,12 +138,12 @@ bool ecat_master_bring_online(ecat_master_t *master)
 
     if (master->ctx.slavelist[0].state == EC_STATE_OPERATIONAL)
     {
-        printf("[SUCCESS] All slaves reached OP state. System is ONLINE.\n");
+        printf("[ECAT] state: OP online\n");
         return true;
     }
     else
     {
-        printf("[ERROR] Failed to reach OP state. Current state: 0x%x\n", master->ctx.slavelist[0].state);
+        printf("[ECAT][ERROR] failed to reach OP state (state=0x%x)\n", master->ctx.slavelist[0].state);
         ecat_dump_slave_states(master);
 
         return false;

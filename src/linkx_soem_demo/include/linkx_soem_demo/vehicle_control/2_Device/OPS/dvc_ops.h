@@ -9,10 +9,12 @@
 //   /r2/ops/pose2d    Pose2D    x=Pos_X(mm), y=Pos_Y(mm), theta=Yaw(rad)
 //   /r2/ops/extra     Float32MultiArray[3]  pitch / roll / omega_z (rad, rad/s)
 //
-// 上层 (Navigation) 通过 getData() 拿到 Struct_OPS_Rx_Data 副本。
+// 上层通过 getData() 拿到的 Struct_OPS_Rx_Data 统一为 deg / deg/s。
 
 #include <atomic>
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 
@@ -22,22 +24,42 @@
 
 struct Struct_OPS_Rx_Data
 {
-    float Yaw;
-    float Pitch;
-    float Roll;
+    float Yaw;      // deg
+    float Pitch;    // deg
+    float Roll;     // deg
     float Pos_X;
     float Pos_Y;
-    float Omega_Z;
+    float Omega_Z;  // deg/s
+};
+
+struct Struct_OPS_Raw_CAN_Frame
+{
+    uint8_t dlen = 0;
+    std::array<uint8_t, 8> data{};
+};
+
+struct Struct_OPS_Decoded_CAN_Frame
+{
+    uint32_t count = 0;
+    uint32_t invalid_count = 0;
+    bool valid = false;
+    std::array<uint8_t, 28> data{};
 };
 
 class Class_OPS
 {
 public:
     void init(rclcpp::Node *node);
+    void shutdown();
+
+    void CAN_RxCpltCallback(const uint8_t *rx_data, uint8_t dlen);
 
     Struct_OPS_Rx_Data getData();
     Struct_OPS_Rx_Data *getData_Ptr() { return &data_; }
+    Struct_OPS_Raw_CAN_Frame getRawCANFrame();
+    Struct_OPS_Decoded_CAN_Frame getLastDecodedFrame();
 
+    bool hasRecentFrame();
     bool isConnected();
 
 private:
@@ -47,7 +69,17 @@ private:
 
     std::mutex                    mtx_;
     Struct_OPS_Rx_Data            data_{};
+    Struct_OPS_Raw_CAN_Frame      raw_can_{};
+    Struct_OPS_Decoded_CAN_Frame  last_decoded_frame_{};
+    std::array<uint8_t, 64>       rx_buffer_{};
+    size_t                        rx_buffer_len_ = 0;
+    std::atomic<int64_t>          last_frame_ns_{0};
     std::atomic<int64_t>          last_update_ns_{0};
+
+    void Try_Parse_Frame_();
+    void Drop_Front_(size_t n);
+    static float readFloatLE(const uint8_t *bytes);
+    static bool isFiniteFrame(const Struct_OPS_Rx_Data &data);
 
     static int64_t now_ns()
     {

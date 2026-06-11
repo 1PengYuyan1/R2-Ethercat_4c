@@ -187,6 +187,10 @@ struct Struct_Motor_DM_Rx_Data_Normal
     float target_position;
     float target_torque;
 
+    uint16_t Raw_Angle_Encoder;
+    uint16_t Raw_Omega_Encoder;
+    uint16_t Raw_Torque_Encoder;
+
     uint32_t Pre_Encoder;
     int32_t Total_Encoder;
     int32_t Total_Round;
@@ -217,10 +221,14 @@ public:
     inline Enum_Motor_DM_Status Get_Status();
     inline Enum_Motor_DM_Control_Status_Normal Get_Now_Control_Status();
     inline float Get_Now_Radian();
+    inline float Get_Current_Single_Radian();
     inline float Get_Now_Omega();
     inline float Get_Now_Torque();
     inline float Get_Now_MOS_Temperature();
     inline float Get_Now_Rotor_Temperature();
+    inline uint16_t Get_Raw_Angle_Encoder();
+    inline uint16_t Get_Raw_Omega_Encoder();
+    inline uint16_t Get_Raw_Torque_Encoder();
     inline float Get_Now_Steer_Radian();
     inline float Get_Now_Steer_Omega();
     inline Enum_Motor_DM_Control_Method Get_Control_Method();
@@ -255,6 +263,15 @@ public:
     void CAN_Send_Enter();
     void CAN_Send_Exit();
     void CAN_Send_Save_Zero();
+
+    // 选择发送帧类型: true=CAN-FD(带 BRS, 切高速数据段), false=经典 CAN(默认)。需在 Init 之后调用。
+    void Set_Use_FDCAN(bool __enable) { Use_FDCAN_ = __enable; }
+    // 调试模式: 无反馈状态时也发送当前控制帧。仅用于链路/底盘架空联调。
+    void Set_Force_Output_Without_Feedback(bool __enable) { Force_Output_Without_Feedback_ = __enable; }
+    // 位置反馈默认直接使用 DM 协议的 [-Pmax,+Pmax] 位置值；需要跨边界连续展开时显式开启。
+    void Set_Position_Unwrap(bool __enable) { Position_Unwrap_Enable_ = __enable; }
+    // 反馈位置 16-bit 半区间缩放，默认等于控制 Pmax；部分减速电机反馈单圈范围与控制 Pmax 不一致。
+    void Set_Feedback_Radian_Max(float __Feedback_Radian_Max) { Feedback_Radian_Max = __Feedback_Radian_Max; }
 
     void TIM_Alive_PeriodElapsedCallback();
     void TIM_Send_PeriodElapsedCallback();
@@ -323,6 +340,8 @@ protected:
 
     // 最大位置, 与上位机控制幅值PMAX保持一致
     float Radian_Max;
+    // 反馈位置 16-bit 半区间缩放；默认与 Radian_Max 相同，可按具体电机反馈编码单独设置
+    float Feedback_Radian_Max;
     // 最大速度, 与上位机控制幅值VMAX保持一致
     float Omega_Max;
     // 最大扭矩, 与上位机控制幅值TMAX保持一致
@@ -336,6 +355,11 @@ protected:
 
     // 发送缓冲区
     uint8_t Tx_Data[8];
+
+    // 发送是否使用 CAN-FD(带 BRS, 切高速数据段); 默认经典 CAN, 仅特定测试显式开启
+    bool Use_FDCAN_ = false;
+    bool Force_Output_Without_Feedback_ = false;
+    bool Position_Unwrap_Enable_ = false;
 
     // 读变量
 
@@ -413,6 +437,9 @@ protected:
     void Data_Process(uint8_t *__Data);
 
     void Output();
+
+    // 按 Use_FDCAN_ 选择经典/FD(BRS) 帧, 发送 8 字节到 DM_CAN_Tx_ID
+    void CAN_Send_Frame(const uint8_t *__data);
 };
 
 /**
@@ -556,6 +583,16 @@ inline float Class_Motor_DM_Normal::Get_Now_Radian()
 }
 
 /**
+ * @brief 获取单圈协议角度
+ *
+ * @return float 单圈协议角度
+ */
+inline float Class_Motor_DM_Normal::Get_Current_Single_Radian()
+{
+    return (data.current_single_rad);
+}
+
+/**
  * @brief 获取当前角速度
  *
  * @return float 当前角速度
@@ -593,6 +630,36 @@ inline float Class_Motor_DM_Normal::Get_Now_MOS_Temperature()
 inline float Class_Motor_DM_Normal::Get_Now_Rotor_Temperature()
 {
     return (data.Now_Rotor_Temperature);
+}
+
+/**
+ * @brief 获取 DM 反馈原始位置编码值
+ *
+ * @return uint16_t 16-bit raw angle
+ */
+inline uint16_t Class_Motor_DM_Normal::Get_Raw_Angle_Encoder()
+{
+    return (data.Raw_Angle_Encoder);
+}
+
+/**
+ * @brief 获取 DM 反馈原始速度编码值
+ *
+ * @return uint16_t 12-bit raw omega
+ */
+inline uint16_t Class_Motor_DM_Normal::Get_Raw_Omega_Encoder()
+{
+    return (data.Raw_Omega_Encoder);
+}
+
+/**
+ * @brief 获取 DM 反馈原始力矩编码值
+ *
+ * @return uint16_t 12-bit raw torque
+ */
+inline uint16_t Class_Motor_DM_Normal::Get_Raw_Torque_Encoder()
+{
+    return (data.Raw_Torque_Encoder);
 }
 
 /**

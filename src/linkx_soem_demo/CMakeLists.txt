@@ -13,7 +13,7 @@ find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 
 # ============================================================================
-# 复用源列表：SOEM 底层（所有 test_main + 主控都依赖）
+# 复用源列表：SOEM 底层（主控依赖）
 # ============================================================================
 set(SOEM_SRC
     src/vehicle_control/1_Middleware/soem/ec_base.c
@@ -30,7 +30,7 @@ set(SOEM_SRC
     src/vehicle_control/1_Middleware/soem/oshw.c
 )
 
-# 复用源列表：LinkX + EtherCAT manager（需要 CAN 收发的 test_main 用得到）
+# 复用源列表：LinkX + EtherCAT manager（主控 CAN 桥依赖）
 set(LINKX_BRIDGE_SRC
     src/vehicle_control/1_Middleware/linkx/linkx.c
     src/vehicle_control/2_Device/Ethercat/ecat_manager/ecat_manager.c
@@ -38,8 +38,7 @@ set(LINKX_BRIDGE_SRC
     src/vehicle_control/2_Device/rt_timing/rt_timing.c
 )
 
-# 复用 include 目录（test_main 共用）
-set(TEST_MAIN_INCLUDE_DIRS
+set(EXTRA_TEST_INCLUDE_DIRS
     include
     include/linkx_soem_demo
     include/linkx_soem_demo/vehicle_control
@@ -60,11 +59,7 @@ set(TEST_MAIN_INCLUDE_DIRS
     include/linkx_soem_demo/vehicle_control/3_Chariot/chassis
     include/linkx_soem_demo/vehicle_control/3_Chariot/chassis/steer_wheel
     include/linkx_soem_demo/vehicle_control/3_Chariot/chassis/omni_wheel
-    include/linkx_soem_demo/vehicle_control/3_Chariot/gantry
-    include/linkx_soem_demo/vehicle_control/3_Chariot/arm
-    include/linkx_soem_demo/vehicle_control/3_Chariot/navigation
-    include/linkx_soem_demo/vehicle_control/4_Interaction/robot
-    include/linkx_soem_demo/vehicle_control/5_Task/task
+    include/linkx_soem_demo/vehicle_control/3_Chariot/lift
 )
 
 # ============================================================================
@@ -78,8 +73,7 @@ set(VEHICLE_CONTROL_SRC
 
     # 3_Chariot —— 全向轮工况
     src/vehicle_control/3_Chariot/chassis/omni_wheel/crt_chassis_omni.cpp
-    src/vehicle_control/3_Chariot/gantry/crt_gantry.cpp
-    src/vehicle_control/3_Chariot/arm/crt_arm.cpp
+    src/vehicle_control/3_Chariot/lift/crt_lift.cpp
     src/vehicle_control/3_Chariot/navigation/crt_navigation.cpp
 
     # 2_Device
@@ -116,8 +110,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     include/linkx_soem_demo/vehicle_control/3_Chariot/chassis
     include/linkx_soem_demo/vehicle_control/3_Chariot/chassis/steer_wheel
     include/linkx_soem_demo/vehicle_control/3_Chariot/chassis/omni_wheel
-    include/linkx_soem_demo/vehicle_control/3_Chariot/gantry
-    include/linkx_soem_demo/vehicle_control/3_Chariot/arm
+    include/linkx_soem_demo/vehicle_control/3_Chariot/lift
     include/linkx_soem_demo/vehicle_control/3_Chariot/navigation
     include/linkx_soem_demo/vehicle_control/4_Interaction/robot
     include/linkx_soem_demo/vehicle_control/5_Task/task
@@ -138,14 +131,14 @@ ament_target_dependencies(${PROJECT_NAME}
 )
 
 # ============================================================================
-# 2) 遥控解算节点：joy → /cmd_vel + /robot_buttons
+# 2) 遥控解算节点：joy → /chassis/remote_cmd_vel + /robot_buttons
 # ============================================================================
 add_executable(remote_node_cpp
     src/remote/ros2/remote_node.cpp
     src/remote/ros2/joystick_mapper.cpp
     src/remote/device/Remote/dvc_logF710.cpp
 )
-target_include_directories(remote_node_cpp PRIVATE include)
+target_include_directories(remote_node_cpp PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
 ament_target_dependencies(remote_node_cpp
     rclcpp sensor_msgs geometry_msgs std_msgs)
 
@@ -158,91 +151,174 @@ add_executable(stm32_node_cpp
 ament_target_dependencies(stm32_node_cpp
     rclcpp geometry_msgs std_msgs)
 
-# ============================================================================
-# 4) test_main: linkx_set_alias —— EEPROM Station Alias 配置工具（最小依赖）
-# ============================================================================
-add_executable(linkx_set_alias
-    src/test_mains/linkx_set_alias_main.cpp
-    ${SOEM_SRC}
-)
-target_include_directories(linkx_set_alias PRIVATE ${TEST_MAIN_INCLUDE_DIRS})
-target_link_libraries(linkx_set_alias pcap pthread rt m)
-
-# ============================================================================
-# 5) test_main: can_link_test —— 4 通道经典 CAN 1Mbps 链路冒烟测试
-# ============================================================================
-add_executable(can_link_test
-    src/test_mains/can_link_test_main.cpp
-    ${SOEM_SRC}
-    ${LINKX_BRIDGE_SRC}
-)
-target_include_directories(can_link_test PRIVATE ${TEST_MAIN_INCLUDE_DIRS})
-target_link_libraries(can_link_test pcap pthread rt m)
-
-# ============================================================================
-# 6) test_main: motor_calib —— DM6225 / DM3519 电机参数标定（friction/stiction/inertia）
-# 注：参数标定基于舵轮硬件，沿用 steer_wheel 路径
-# ============================================================================
-add_executable(motor_calib
-    src/test_mains/motor_calib_main.cpp
-    src/vehicle_control/3_Chariot/chassis/steer_wheel/crt_chassis.cpp
-    src/vehicle_control/2_Device/Motor/dvc_motor_dm.cpp
-    src/vehicle_control/1_Middleware/Algorithm/alg_pid.cpp
-    src/vehicle_control/1_Middleware/Algorithm/ramp.c
-    ${SOEM_SRC}
-    ${LINKX_BRIDGE_SRC}
-)
-target_include_directories(motor_calib PRIVATE ${TEST_MAIN_INCLUDE_DIRS})
-target_link_libraries(motor_calib pcap pthread rt m)
-
-# ============================================================================
-# 7) test_main: steer_tuning —— 舵向 PID 网格扫参（用 DM6225 内部反馈，无 BRT 编码器）
-# 注：舵向调参基于舵轮硬件，沿用 steer_wheel 路径
-# ============================================================================
-add_executable(steer_tuning
-    src/test_mains/steer_tuning_main.cpp
-    src/vehicle_control/3_Chariot/chassis/steer_wheel/crt_chassis.cpp
-    src/vehicle_control/2_Device/Motor/dvc_motor_dm.cpp
-    src/vehicle_control/1_Middleware/Algorithm/alg_pid.cpp
-    src/vehicle_control/1_Middleware/Algorithm/ramp.c
-    ${SOEM_SRC}
-    ${LINKX_BRIDGE_SRC}
-)
-target_include_directories(steer_tuning PRIVATE ${TEST_MAIN_INCLUDE_DIRS})
-target_link_libraries(steer_tuning pcap pthread rt m)
-
-# ============================================================================
-# 8) test_main: robot_test —— 整车回归 (Chassis + Gantry + Arm + ROS 桥接)
-# 注意：不链接 task.cpp/main.cpp（避免 robot/master/linkx_dev 重定义）
-# 整车工况：全向轮，使用 omni_wheel/crt_chassis_omni.cpp
-# ============================================================================
-add_executable(robot_test
-    src/test_mains/robot_test_main.cpp
-    src/vehicle_control/4_Interaction/robot/robot.cpp
-    src/vehicle_control/3_Chariot/chassis/omni_wheel/crt_chassis_omni.cpp
-    src/vehicle_control/3_Chariot/gantry/crt_gantry.cpp
-    src/vehicle_control/3_Chariot/arm/crt_arm.cpp
-    src/vehicle_control/3_Chariot/navigation/crt_navigation.cpp
-    src/vehicle_control/2_Device/Motor/dvc_motor_dm.cpp
-    src/vehicle_control/2_Device/OPS/dvc_ops.cpp
-    src/vehicle_control/1_Middleware/Algorithm/alg_pid.cpp
-    src/vehicle_control/1_Middleware/Algorithm/ramp.c
-    ${SOEM_SRC}
-    ${LINKX_BRIDGE_SRC}
-)
-target_include_directories(robot_test PRIVATE ${TEST_MAIN_INCLUDE_DIRS})
-target_link_libraries(robot_test pcap pthread rt m)
-ament_target_dependencies(robot_test rclcpp geometry_msgs std_msgs sensor_msgs)
-
-install(TARGETS
+set(LINKX_SOEM_INSTALL_TARGETS
     ${PROJECT_NAME}
     remote_node_cpp
     stm32_node_cpp
-    linkx_set_alias
-    can_link_test
-    motor_calib
-    steer_tuning
-    robot_test
+)
+
+# ============================================================================
+# 4) extra_tests：源文件存在时自动注册，避免未落地测试阻断整包配置
+# ============================================================================
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/dm_motor_param_calib_main.cpp")
+    add_executable(dm_motor_param_calib
+        src/extra_tests/dm_motor_param_calib_main.cpp
+        src/vehicle_control/3_Chariot/chassis/omni_wheel/crt_chassis_omni.cpp
+        src/vehicle_control/2_Device/Motor/dvc_motor_dm.cpp
+        src/vehicle_control/1_Middleware/Algorithm/alg_pid.cpp
+        src/vehicle_control/1_Middleware/Algorithm/ramp.c
+        ${SOEM_SRC}
+        ${LINKX_BRIDGE_SRC}
+    )
+    target_include_directories(dm_motor_param_calib PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
+    target_link_libraries(dm_motor_param_calib pcap pthread rt m)
+    list(APPEND LINKX_SOEM_INSTALL_TARGETS dm_motor_param_calib)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/omni_mit_param_sweep_main.cpp")
+    add_executable(omni_mit_param_sweep
+        src/extra_tests/omni_mit_param_sweep_main.cpp
+        src/vehicle_control/3_Chariot/chassis/omni_wheel/crt_chassis_omni.cpp
+        src/vehicle_control/2_Device/Motor/dvc_motor_dm.cpp
+        src/vehicle_control/1_Middleware/Algorithm/alg_pid.cpp
+        src/vehicle_control/1_Middleware/Algorithm/ramp.c
+        ${SOEM_SRC}
+        ${LINKX_BRIDGE_SRC}
+    )
+    target_include_directories(omni_mit_param_sweep PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
+    target_link_libraries(omni_mit_param_sweep pcap pthread rt m)
+    list(APPEND LINKX_SOEM_INSTALL_TARGETS omni_mit_param_sweep)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/omni_motion_record_main.cpp")
+    add_executable(omni_motion_record
+        src/extra_tests/omni_motion_record_main.cpp
+        src/vehicle_control/3_Chariot/chassis/omni_wheel/crt_chassis_omni.cpp
+        src/vehicle_control/2_Device/Motor/dvc_motor_dm.cpp
+        src/vehicle_control/1_Middleware/Algorithm/alg_pid.cpp
+        src/vehicle_control/1_Middleware/Algorithm/ramp.c
+        ${SOEM_SRC}
+        ${LINKX_BRIDGE_SRC}
+    )
+    target_include_directories(omni_motion_record PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
+    target_link_libraries(omni_motion_record pcap pthread rt m)
+    list(APPEND LINKX_SOEM_INSTALL_TARGETS omni_motion_record)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/omni_accel_response_main.cpp")
+    add_executable(omni_accel_response
+        src/extra_tests/omni_accel_response_main.cpp
+        src/vehicle_control/3_Chariot/chassis/omni_wheel/crt_chassis_omni.cpp
+        src/vehicle_control/2_Device/Motor/dvc_motor_dm.cpp
+        src/vehicle_control/1_Middleware/Algorithm/alg_pid.cpp
+        src/vehicle_control/1_Middleware/Algorithm/ramp.c
+        ${SOEM_SRC}
+        ${LINKX_BRIDGE_SRC}
+    )
+    target_include_directories(omni_accel_response PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
+    target_link_libraries(omni_accel_response pcap pthread rt m)
+    list(APPEND LINKX_SOEM_INSTALL_TARGETS omni_accel_response)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/lift_3519_feedback_main.cpp")
+    add_executable(lift_3519_feedback
+        src/extra_tests/lift_3519_feedback_main.cpp
+        src/vehicle_control/3_Chariot/lift/crt_lift.cpp
+        src/vehicle_control/2_Device/Motor/dvc_motor_dm.cpp
+        ${SOEM_SRC}
+        ${LINKX_BRIDGE_SRC}
+    )
+    target_include_directories(lift_3519_feedback PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
+    target_link_libraries(lift_3519_feedback pcap pthread rt m)
+    list(APPEND LINKX_SOEM_INSTALL_TARGETS lift_3519_feedback)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/ops_yaw_pd_sweep_main.cpp")
+    add_executable(ops_yaw_pd_sweep
+        src/extra_tests/ops_yaw_pd_sweep_main.cpp
+        src/vehicle_control/3_Chariot/chassis/omni_wheel/crt_chassis_omni.cpp
+        src/vehicle_control/2_Device/Motor/dvc_motor_dm.cpp
+        src/vehicle_control/2_Device/OPS/dvc_ops.cpp
+        src/vehicle_control/1_Middleware/Algorithm/alg_pid.cpp
+        src/vehicle_control/1_Middleware/Algorithm/ramp.c
+        ${SOEM_SRC}
+        ${LINKX_BRIDGE_SRC}
+    )
+    target_include_directories(ops_yaw_pd_sweep PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
+    target_link_libraries(ops_yaw_pd_sweep pcap pthread rt m)
+    ament_target_dependencies(ops_yaw_pd_sweep
+        rclcpp
+        geometry_msgs
+        std_msgs
+    )
+    list(APPEND LINKX_SOEM_INSTALL_TARGETS ops_yaw_pd_sweep)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/ops_terminal_probe_main.cpp")
+    add_executable(ops_terminal_probe
+        src/extra_tests/ops_terminal_probe_main.cpp
+        src/vehicle_control/2_Device/OPS/dvc_ops.cpp
+    )
+    target_include_directories(ops_terminal_probe PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
+    ament_target_dependencies(ops_terminal_probe
+        rclcpp
+        geometry_msgs
+        std_msgs
+    )
+    list(APPEND LINKX_SOEM_INSTALL_TARGETS ops_terminal_probe)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/ops_can_probe_main.cpp")
+    add_executable(ops_can_probe
+        src/extra_tests/ops_can_probe_main.cpp
+        src/vehicle_control/2_Device/OPS/dvc_ops.cpp
+        ${SOEM_SRC}
+        ${LINKX_BRIDGE_SRC}
+    )
+    target_include_directories(ops_can_probe PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
+    target_link_libraries(ops_can_probe pcap pthread rt m)
+    ament_target_dependencies(ops_can_probe
+        rclcpp
+        geometry_msgs
+        std_msgs
+    )
+    list(APPEND LINKX_SOEM_INSTALL_TARGETS ops_can_probe)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/ops_can_command_main.cpp")
+    add_executable(ops_can_command
+        src/extra_tests/ops_can_command_main.cpp
+        ${SOEM_SRC}
+        ${LINKX_BRIDGE_SRC}
+    )
+    target_include_directories(ops_can_command PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
+    target_link_libraries(ops_can_command pcap pthread rt m)
+    list(APPEND LINKX_SOEM_INSTALL_TARGETS ops_can_command)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/omni_slope_param_sweep_main.cpp")
+    add_executable(omni_slope_param_sweep
+        src/extra_tests/omni_slope_param_sweep_main.cpp
+        src/vehicle_control/3_Chariot/chassis/omni_wheel/crt_chassis_omni.cpp
+        src/vehicle_control/2_Device/Motor/dvc_motor_dm.cpp
+        src/vehicle_control/2_Device/OPS/dvc_ops.cpp
+        src/vehicle_control/1_Middleware/Algorithm/alg_pid.cpp
+        src/vehicle_control/1_Middleware/Algorithm/ramp.c
+        ${SOEM_SRC}
+        ${LINKX_BRIDGE_SRC}
+    )
+    target_include_directories(omni_slope_param_sweep PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
+    target_link_libraries(omni_slope_param_sweep pcap pthread rt m)
+    ament_target_dependencies(omni_slope_param_sweep
+        rclcpp
+        geometry_msgs
+        std_msgs
+    )
+    list(APPEND LINKX_SOEM_INSTALL_TARGETS omni_slope_param_sweep)
+endif()
+
+install(TARGETS
+    ${LINKX_SOEM_INSTALL_TARGETS}
     DESTINATION lib/${PROJECT_NAME}
 )
 

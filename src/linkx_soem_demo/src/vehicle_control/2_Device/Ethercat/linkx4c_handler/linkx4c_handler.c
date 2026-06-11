@@ -75,16 +75,19 @@ bool linkx_hw_wakeup(linkx_t *linkx)
 
     bool all_ok = true;
     uint8_t enable = 1;
-    printf("[LinkX] Waking up CAN PHYs via SDO...\n");
+    bool ch_ok[LINKX_CAN_CHANNEL_NUM] = {0};
 
     for (int ch = 0; ch < LINKX_CAN_CHANNEL_NUM; ch++)
     {
         bool ok = linkx_switch_can_channel(linkx, ch, enable != 0);
+        ch_ok[ch] = ok;
         all_ok = all_ok && ok;
-        if (ok) printf("[LinkX] CAN Channel %d: WAKEUP SUCCESS\n", ch);
-        else printf("[LinkX] CAN Channel %d: WAKEUP FAILED\n", ch);
     }
-    printf("[LinkX] All hardware initialization commands sent.\n");
+    printf("[LinkX] wakeup: CAN0=%s CAN1=%s CAN2=%s CAN3=%s\n",
+           ch_ok[0] ? "OK" : "FAIL",
+           ch_ok[1] ? "OK" : "FAIL",
+           ch_ok[2] ? "OK" : "FAIL",
+           ch_ok[3] ? "OK" : "FAIL");
     return all_ok;
 }
 
@@ -167,8 +170,6 @@ bool linkx_set_can_baudrate(linkx_t *linkx, uint8_t ch, uint8_t fd_en,
     int wkc_count = 0;        // 记录成功的 SDO 写入次数
     uint8_t val;
 
-    printf("[LinkX] Configuring CAN %d Timings...\n", ch);
-
     // 1. 指定要配置的通道号 (SubIndex 0x01)
     val = ch;
     wkc_count += ecx_SDOwrite(linkx->master, linkx->slave_id, index, 0x01, FALSE, sizeof(val), &val, EC_TIMEOUTRXM);
@@ -195,10 +196,9 @@ bool linkx_set_can_baudrate(linkx_t *linkx, uint8_t ch, uint8_t fd_en,
 
     // 一共进行了 11 次 SDO 写入，全部成功才算配置成功
     if (wkc_count == 11) {
-        printf("[LinkX] CAN Channel %d Timing configured successfully!\n", ch);
         return true;
     } else {
-        printf("[LinkX] CAN Channel %d Timing config FAILED! (Success Count = %d/11)\n", ch, wkc_count);
+        printf("[LinkX][WARN] CAN%d timing config failed (%d/11 SDO writes)\n", ch, wkc_count);
         return false;
     }
 }

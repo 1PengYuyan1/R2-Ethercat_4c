@@ -1,9 +1,19 @@
 #include "crt_navigation.h"
 
+namespace
+{
+float Normalize_Angle_Deg(float angle)
+{
+    while (angle > 180.0f) angle -= 360.0f;
+    while (angle < -180.0f) angle += 360.0f;
+    return angle;
+}
+}
+
 // 速度0.05
 // PID_X.Init(0.05f, 0.05f, 0.01f, 0.0f, 0.0f, 3.0f, 0.002f); // 假设2ms控制周期
 // PID_Y.Init(0.05f, 0.05f, 0.01f, 0.0f, 0.0f, 3.0f, 0.002f);
-// PID_Yaw.Init(0.005f, 0.0001f, 0.00f, 0.0f, 5.0f, 1.0f, 0.002f);
+// PID_Yaw 输入单位为 deg，输出单位为 rad/s。
 
 void Class_Navigation::Init() {
     // 初始化位置环 PID 参数
@@ -68,9 +78,7 @@ void Class_Navigation::Calculate(const Struct_OPS_Rx_Data& current_ops) {
     PID_Y.Set_Now(current_ops.Pos_Y);
     PID_Y.TIM_Calculate_PeriodElapsedCallback();
 
-    float angle_error = current_wp.yaw - current_ops.Yaw;
-    if (angle_error > 180.0f) angle_error -= 360.0f;
-    else if (angle_error < -180.0f) angle_error += 360.0f;
+    float angle_error = Normalize_Angle_Deg(current_wp.yaw - current_ops.Yaw);
     PID_Yaw.Set_Target(angle_error);
     PID_Yaw.Set_Now(0);
     PID_Yaw.TIM_Calculate_PeriodElapsedCallback();
@@ -127,7 +135,7 @@ void Class_Navigation::Calculate(const Struct_OPS_Rx_Data& current_ops) {
 //     float dx = current_wp.x - current_ops.Pos_X;
 //     float dy = current_wp.y - current_ops.Pos_Y;
 //     float distance = sqrtf(dx * dx + dy * dy);
-//     float dyaw = Math_Modulus_Normalization(current_wp.yaw - current_ops.Yaw, 360.0f);
+//     float dyaw = Normalize_Angle_Deg(current_wp.yaw - current_ops.Yaw);
 //
 //     // 4. 航点切换逻辑
 //     if (is_final_waypoint) {

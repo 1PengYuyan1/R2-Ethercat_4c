@@ -25,6 +25,7 @@ struct Struct_LogF710_Command
     float vx = 0.0f;
     float vy = 0.0f;
     float omega = 0.0f;
+    float right_y = 0.0f;
 };
 
 class Class_LogF710
@@ -47,6 +48,7 @@ private:
     bool is_ros_control_enabled_ = false;
     uint32_t start_press_ms_ = 0;
     uint32_t back_press_ms_ = 0;
+    bool start_action_taken_ = false;
     uint16_t last_button_code_ = LogF710_Key_IDLE;
 
     float Apply_Deadzone(float raw_val) const;
