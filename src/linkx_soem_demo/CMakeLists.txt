@@ -145,16 +145,16 @@ ament_target_dependencies(remote_node_cpp
 # ============================================================================
 # 3) 通用话题转发节点：/cmd_vel → /chassis/cmd_vel；/robot_buttons → /chassis/buttons
 # ============================================================================
-add_executable(stm32_node_cpp
-    src/remote/ros2/stm32_node.cpp
+add_executable(topic_relay_cpp
+    src/remote/ros2/topic_relay.cpp
 )
-ament_target_dependencies(stm32_node_cpp
+ament_target_dependencies(topic_relay_cpp
     rclcpp geometry_msgs std_msgs)
 
 set(LINKX_SOEM_INSTALL_TARGETS
     ${PROJECT_NAME}
     remote_node_cpp
-    stm32_node_cpp
+    topic_relay_cpp
 )
 
 # ============================================================================

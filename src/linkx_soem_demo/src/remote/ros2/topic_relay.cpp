@@ -2,9 +2,9 @@
 #include <geometry_msgs/msg/twist.hpp>
 #include <std_msgs/msg/u_int16.hpp>
 
-class Ros2BridgeNode : public rclcpp::Node {
+class TopicRelayNode : public rclcpp::Node {
 public:
-    Ros2BridgeNode() : Node("stm32_node_cpp") {
+    TopicRelayNode() : Node("topic_relay_cpp") {
         this->declare_parameter("input_cmd_topic", "/cmd_vel");
         this->declare_parameter("input_buttons_topic", "/robot_buttons");
         this->declare_parameter("output_cmd_topic", "/chassis/cmd_vel");
@@ -19,10 +19,10 @@ public:
         pub_buttons_ = this->create_publisher<std_msgs::msg::UInt16>(output_buttons_topic, 10);
 
         sub_cmd_ = this->create_subscription<geometry_msgs::msg::Twist>(
-            input_cmd_topic, 10, std::bind(&Ros2BridgeNode::cmdCallback, this, std::placeholders::_1));
+            input_cmd_topic, 10, std::bind(&TopicRelayNode::cmdCallback, this, std::placeholders::_1));
 
         sub_buttons_ = this->create_subscription<std_msgs::msg::UInt16>(
-            input_buttons_topic, 10, std::bind(&Ros2BridgeNode::buttonCallback, this, std::placeholders::_1));
+            input_buttons_topic, 10, std::bind(&TopicRelayNode::buttonCallback, this, std::placeholders::_1));
 
     }
 
@@ -52,7 +52,7 @@ private:
 
 int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<Ros2BridgeNode>());
+    rclcpp::spin(std::make_shared<TopicRelayNode>());
     rclcpp::shutdown();
     return 0;
 }

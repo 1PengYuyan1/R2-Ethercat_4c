@@ -52,7 +52,7 @@ def generate_launch_description():
         #    /robot_buttons → /chassis/buttons
         Node(
             package='linkx_soem_demo',
-            executable='stm32_node_cpp',
+            executable='topic_relay_cpp',
             name='chassis_relay',
             prefix=ros_nodes_prefix,
             output='screen',
@@ -68,7 +68,7 @@ def generate_launch_description():
         # 4) 话题转发（云台，可选）
         Node(
             package='linkx_soem_demo',
-            executable='stm32_node_cpp',
+            executable='topic_relay_cpp',
             name='gimbal_relay',
             prefix=ros_nodes_prefix,
             output='screen',

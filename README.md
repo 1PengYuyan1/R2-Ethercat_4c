@@ -20,7 +20,7 @@ Logitech F710
     ▼
 joy_node ──► remote_node_cpp ──► /chassis/remote_cmd_vel ─────┐
                               └─► /robot_buttons ─────────────┤
-上层规划 /cmd_vel ──► stm32_node_cpp(chassis_relay) ───────────┤
+上层规划 /cmd_vel ──► topic_relay_cpp(chassis_relay) ───────────┤
                               └─► /chassis/cmd_vel(高优先级)  │
                               └─► /chassis/buttons            │
                                                                ▼
@@ -86,7 +86,7 @@ flowchart LR
     B --> C[remote_node_cpp]
     C --> D["/chassis/remote_cmd_vel"]
     C --> E["/robot_buttons"]
-    P["上层规划 /cmd_vel"] --> R[stm32_node_cpp: chassis_relay]
+    P["上层规划 /cmd_vel"] --> R[topic_relay_cpp: chassis_relay]
     E --> R
     R --> F["/chassis/cmd_vel 和 /chassis/buttons"]
     D --> G[vehicle_control 订阅 ROS 指令]
@@ -159,7 +159,7 @@ Ethercat-R2/
         │   │   ├── 4_Interaction/      # robot
         │   │   └── 5_Task/             # task 顶层调度
         │   ├── remote/                 # 手柄解算 + 串口/话题转发
-        │   │   ├── ros2/               # remote_node / stm32_node / joystick_mapper
+        │   │   ├── ros2/               # remote_node / topic_relay / joystick_mapper
         │   │   └── device/Remote/      # F710 手柄驱动
         ├── include/
         └── CMakeLists.txt
@@ -301,7 +301,7 @@ joy_node ──► /joy ──► remote_node ──► /chassis/remote_cmd_vel 
 | --- | --- |
 | `linkx_soem_demo` | **整车主控**:SOEM 主站 + LinkX-4C CAN 桥 + chassis/lift/navigation 调度 |
 | `remote_node_cpp` | 手柄解算:`/joy` → `/chassis/remote_cmd_vel` + `/robot_buttons` |
-| `stm32_node_cpp` | 通用话题转发(参数化输入/输出话题,可复用做 chassis_relay / gimbal_relay) |
+| `topic_relay_cpp` | 通用话题转发(参数化输入/输出话题,可复用做 chassis_relay / gimbal_relay) |
 
 ---
 
@@ -364,7 +364,7 @@ joy_node ──► /joy ──► remote_node ──► /chassis/remote_cmd_vel 
 - 手柄死区 / 自动重复率:`full_system.launch.py` 中 `joy_node` 参数
 - 遥控输出话题:`full_system.launch.py` 中 `remote_node_cpp` 的 `cmd_topic` / `buttons_topic` 参数
 - FastRTPS profile:`src/linkx_bringup/config/fastrtps_profiles.xml`
-- relay 输入/输出话题:`full_system.launch.py` 中 `stm32_node_cpp` 的参数
+- relay 输入/输出话题:`full_system.launch.py` 中 `topic_relay_cpp` 的参数
 
 ---
 

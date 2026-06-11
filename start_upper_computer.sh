@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 启动上位机 ROS 2 控制栈：joy → remote_node → cmd_vel → chassis_relay → linkx_soem_demo (EtherCAT)
+# 启动上位机 ROS 2 控制栈：joy → remote_node → topic_relay → linkx_soem_demo (EtherCAT)
 #
 # 使用方法:
 #   ./start_upper_computer.sh                                 # 默认 ifname=enp86s0, sudo

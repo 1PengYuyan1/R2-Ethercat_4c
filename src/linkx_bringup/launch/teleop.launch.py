@@ -33,8 +33,8 @@ def generate_launch_description():
         # 3. 底盘桥接
         Node(
             package='linkx_soem_demo',
-            executable='stm32_node_cpp',
-            name='stm32_node_chassis', # 名字必须唯一
+            executable='topic_relay_cpp',
+            name='chassis_relay', # 名字必须唯一
             output='screen',
             arguments=['--ros-args', '--log-level', 'WARN'],
             parameters=[{
@@ -48,8 +48,8 @@ def generate_launch_description():
         # 4. 云台桥接
         Node(
             package='linkx_soem_demo',
-            executable='stm32_node_cpp',
-            name='stm32_node_gimbal', # 名字必须唯一
+            executable='topic_relay_cpp',
+            name='gimbal_relay', # 名字必须唯一
             output='screen',
             arguments=['--ros-args', '--log-level', 'WARN'],
             parameters=[{
