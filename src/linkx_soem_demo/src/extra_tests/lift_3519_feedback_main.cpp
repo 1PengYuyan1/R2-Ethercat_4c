@@ -328,6 +328,13 @@ const char *module_selection_name(ModuleSelection selection)
     }
 }
 
+std::string hex_id(uint16_t id)
+{
+    std::ostringstream ss;
+    ss << "0x" << std::uppercase << std::hex << id;
+    return ss.str();
+}
+
 bool ensure_directory_exists(const std::string &dir)
 {
     if (dir.empty() || dir == ".")
@@ -410,7 +417,9 @@ public:
 
         path_ = path;
         rows_ = 0;
-        file_ << "time_s,module,mpos_rad\n";
+        file_ << "time_s,module,ch,rx,tx,online,ctrl,"
+              << "mpos_rad,mvel_rad_s,mrpm,torque_nm,mos_c,rotor_c,"
+              << "rpos_rad,rvel_rad_s,rrpm\n";
         file_.flush();
         return true;
     }
@@ -429,7 +438,20 @@ public:
             const LiftFeedbackSample sample = read_lift_feedback_sample(info);
             file_ << elapsed_s << ','
                   << sample.info->name << ','
-                  << sample.motor_pos_rad << '\n';
+                  << static_cast<int>(sample.info->can_channel) << ','
+                  << "0x" << std::hex << std::uppercase << sample.rx_id << std::dec << ','
+                  << "0x" << std::hex << std::uppercase << sample.tx_id << std::dec << ','
+                  << sample.online_text << ','
+                  << sample.ctrl_text << ','
+                  << sample.motor_pos_rad << ','
+                  << sample.motor_vel_rad_s << ','
+                  << sample.motor_rpm << ','
+                  << sample.torque_nm << ','
+                  << sample.mos_c << ','
+                  << sample.rotor_c << ','
+                  << sample.rod_pos_rad << ','
+                  << sample.rod_vel_rad_s << ','
+                  << sample.rod_rpm << '\n';
             ++rows_;
         }
         file_.flush();
@@ -447,22 +469,39 @@ private:
 
 void print_feedback_table(ModuleSelection selection,
                           double elapsed_s,
+                          bool enable_motors,
                           const CsvRecorder *recorder,
                           float record_hz)
 {
     std::cout << "\033[H\033[J";
     std::cout << std::fixed << std::setprecision(3);
-    std::cout << "R2 Lift DM3519 Position Monitor"
+    std::cout << "R2 Lift DM3519 Feedback Monitor"
               << " | t=" << elapsed_s << "s"
+              << " | motor:rod=3:1"
+              << " | enable_enter=" << (enable_motors ? "ON" : "OFF")
+              << " | MIT command frames=OFF"
               << "\n\n";
 
     std::cout << std::left
-              << std::setw(8)  << "Module"
+              << std::setw(7)  << "Module"
+              << std::setw(4)  << "Ch"
+              << std::setw(6)  << "Rx"
+              << std::setw(6)  << "Tx"
+              << std::setw(8)  << "Online"
+              << std::setw(10) << "Ctrl"
               << std::right
-              << std::setw(14) << "MPos(rad)"
+              << std::setw(10) << "MPos"
+              << std::setw(10) << "MVel"
+              << std::setw(10) << "MRPM"
+              << std::setw(10) << "Torque"
+              << std::setw(9)  << "MOS"
+              << std::setw(9)  << "Rotor"
+              << std::setw(10) << "RPos"
+              << std::setw(10) << "RVel"
+              << std::setw(10) << "RRPM"
               << "\n";
 
-    std::cout << std::string(22, '-') << "\n";
+    std::cout << std::string(129, '-') << "\n";
 
     for (const auto &info : kModuleInfo)
     {
@@ -472,22 +511,38 @@ void print_feedback_table(ModuleSelection selection,
         const LiftFeedbackSample sample = read_lift_feedback_sample(info);
 
         std::cout << std::left
-                  << std::setw(8)  << sample.info->name
+                  << std::setw(7)  << sample.info->name
+                  << std::setw(4)  << static_cast<int>(sample.info->can_channel)
+                  << std::setw(6)  << hex_id(sample.rx_id)
+                  << std::setw(6)  << hex_id(sample.tx_id)
+                  << std::setw(8)  << sample.online_text
+                  << std::setw(10) << sample.ctrl_text
                   << std::right
-                  << std::setw(14) << sample.motor_pos_rad
+                  << std::setw(10) << sample.motor_pos_rad
+                  << std::setw(10) << sample.motor_vel_rad_s
+                  << std::setw(10) << sample.motor_rpm
+                  << std::setw(10) << sample.torque_nm
+                  << std::setw(9)  << sample.mos_c
+                  << std::setw(9)  << sample.rotor_c
+                  << std::setw(10) << sample.rod_pos_rad
+                  << std::setw(10) << sample.rod_vel_rad_s
+                  << std::setw(10) << sample.rod_rpm
                   << "\n";
     }
 
-    std::cout << "\nMPos(rad) = motor.Get_Now_Radian(), decoded in dvc_motor_dm.cpp\n"
-              << "Feedback scale: 0 -> P_MAX is treated as "
-              << kLift3519TurnsFromZeroToPmax << " turns, unwrap ON.\n";
+    std::cout << "\nUnits: MPos/RPos=rad, MVel/RVel=rad/s, MRPM/RRPM=rpm, Torque=Nm, MOS/Rotor=C\n";
+    std::cout << "Limits: pmax=" << lift_motor(CHARIOT_LIFT_MODULE_FRONT).Get_Radian_Max()
+              << " rad, vmax=" << lift_motor(CHARIOT_LIFT_MODULE_FRONT).Get_Omega_Max()
+              << " rad/s, tmax=" << lift_motor(CHARIOT_LIFT_MODULE_FRONT).Get_Torque_Max()
+              << " Nm, imax=" << lift_motor(CHARIOT_LIFT_MODULE_FRONT).Get_Current_Max()
+              << " A\n";
     if (recorder != nullptr && recorder->IsOpen())
     {
         std::cout << "Record: " << recorder->Path()
                   << " @ " << record_hz << " Hz, rows=" << recorder->Rows()
                   << "\n";
     }
-    std::cout << "Ctrl-C to quit.\n";
+    std::cout << "Ctrl-C to quit. Exit command is sent on stop when --exit-on-stop=1.\n";
     std::cout.flush();
 }
 
@@ -503,8 +558,7 @@ void print_usage(const char *argv0)
         << "  duration=0 keeps running until Ctrl-C.\n"
         << "  enable=1 sends DM clear-error/enter frames so feedback is live.\n"
         << "  It does not send MIT position/velocity/torque command frames.\n"
-        << "  MPos is read directly from motor.Get_Now_Radian().\n"
-        << "  record=1 writes only time_s,module,mpos_rad to CSV.\n";
+        << "  rod feedback is calculated as rod = motor / 3.\n";
 }
 
 bool configure_linkx_can()
@@ -597,22 +651,20 @@ int main(int argc, char **argv)
     record_hz = std::clamp(record_hz, 1.0f, 1000.0f);
 
     std::cout << "===============================================\n"
-              << "  R2 Lift DM3519 Position Monitor\n"
+              << "  R2 Lift DM3519 Feedback Monitor\n"
               << "  IFNAME        : " << ifname << "\n"
               << "  MODULE        : " << module_selection_name(module_selection) << "\n"
               << "  ENABLE        : " << (enable_motors ? "enter only" : "off") << "\n"
               << "  EXIT_ON_STOP  : " << (exit_on_stop ? "1" : "0") << "\n"
               << "  MIT COMMAND   : off\n"
-              << "  POSITION      : motor.Get_Now_Radian()\n"
-              << "  POS SCALE     : 0 -> P_MAX needs " << kLift3519TurnsFromZeroToPmax
-              << " turns; feedback unwrap ON\n"
               << "  RECORD        : " << (record_enabled ? "on" : "off") << "\n";
     if (record_enabled)
     {
         std::cout << "  RECORD_PATH   : " << record_path << "\n"
                   << "  RECORD_HZ     : " << record_hz << "\n";
     }
-    std::cout << "===============================================\n";
+    std::cout << "  GEAR          : motor:rod = 3:1, rod = motor / 3\n"
+              << "===============================================\n";
 
     print_interface_preflight(ifname);
 
@@ -636,7 +688,6 @@ int main(int argc, char **argv)
     }
 
     st_lift.Init(&st_linkx);
-    configure_selected_lift_position_feedback(module_selection);
 
     CsvRecorder recorder;
     if (record_enabled && !recorder.Open(record_path))
@@ -679,6 +730,7 @@ int main(int argc, char **argv)
         if ((tick % print_period_ticks) == 0U)
             print_feedback_table(module_selection,
                                  static_cast<double>(tick) * 0.001,
+                                 enable_motors,
                                  record_enabled ? &recorder : nullptr,
                                  record_hz);
 
