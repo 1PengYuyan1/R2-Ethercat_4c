@@ -41,12 +41,15 @@ namespace
 constexpr int kChannelCount = 4;
 constexpr uint32_t kControlPeriodMs = 1;
 constexpr uint32_t kAlivePeriodMs = 100;
-constexpr float kLift3519TurnsFromZeroToPmax = 5.0f;
+constexpr float kLiftMotorToRodRatio = 3.0f;
+constexpr float kRadPerSecToRpm = 60.0f / (2.0f * 3.14159265358979323846f);
+constexpr float kCelsiusToKelvin = 273.15f;
 
 struct ModuleInfo
 {
     Enum_Chariot_Lift_Module module;
     const char *name;
+    uint8_t can_channel;
 };
 
 enum class ModuleSelection
@@ -57,14 +60,26 @@ enum class ModuleSelection
 };
 
 const std::array<ModuleInfo, CHARIOT_LIFT_MODULE_NUM> kModuleInfo {{
-    {CHARIOT_LIFT_MODULE_FRONT, "front"},
-    {CHARIOT_LIFT_MODULE_REAR,  "rear"},
+    {CHARIOT_LIFT_MODULE_FRONT, "front", 0},
+    {CHARIOT_LIFT_MODULE_REAR,  "rear",  1},
 }};
 
 struct LiftFeedbackSample
 {
     const ModuleInfo *info;
+    uint16_t rx_id;
+    uint16_t tx_id;
+    const char *online_text;
+    const char *ctrl_text;
     float motor_pos_rad;
+    float motor_vel_rad_s;
+    float motor_rpm;
+    float torque_nm;
+    float mos_c;
+    float rotor_c;
+    float rod_pos_rad;
+    float rod_vel_rad_s;
+    float rod_rpm;
 };
 
 ecat_master_t st_master {};
@@ -178,6 +193,35 @@ Class_Motor_DM_Normal &lift_motor(Enum_Chariot_Lift_Module module)
     return st_lift.Motor_Lift[static_cast<int>(module)];
 }
 
+const char *dm_status_name(Enum_Motor_DM_Status status)
+{
+    return (status == Motor_DM_Status_ENABLE) ? "ONLINE" : "OFFLINE";
+}
+
+const char *dm_control_status_name(Enum_Motor_DM_Control_Status_Normal status)
+{
+    switch (status)
+    {
+        case Motor_DM_Control_Status_DISABLE:              return "DISABLE";
+        case Motor_DM_Control_Status_ENABLE:               return "ENABLE";
+        case Motor_DM_Control_Status_UNDERVOLTAGE:         return "UNDERVOLT";
+        case Motor_DM_Control_Status_OVERCURRENT:          return "OVERCUR";
+        case Motor_DM_Control_Status_MOS_OVERTEMPERATURE:  return "MOS_OT";
+        case Motor_DM_Control_Status_ROTOR_OVERTEMPERATURE:return "ROTOR_OT";
+        case Motor_DM_Control_Status_LOSE_CONNECTION:      return "LOST";
+        case Motor_DM_Control_Status_MOS_OVERLOAD:         return "MOS_OL";
+        case Motor_DM_Control_Status_OVERVOLTAGE:          return "OVERVOLT";
+        default:                                           return "UNKNOWN";
+    }
+}
+
+float temp_k_to_c_or_nan(float temp_k)
+{
+    if (temp_k < 200.0f)
+        return std::numeric_limits<float>::quiet_NaN();
+    return temp_k - kCelsiusToKelvin;
+}
+
 std::string read_first_token(const std::string &path)
 {
     std::ifstream file(path);
@@ -273,20 +317,6 @@ void exit_selected_lift_motors(ModuleSelection selection)
     }
 }
 
-void configure_selected_lift_position_feedback(ModuleSelection selection)
-{
-    for (const auto &info : kModuleInfo)
-    {
-        if (!module_selected(selection, info.module))
-            continue;
-
-        auto &motor = lift_motor(info.module);
-        motor.Set_Feedback_Radian_Max(motor.Get_Radian_Max() /
-                                      (2.0f * kLift3519TurnsFromZeroToPmax));
-        motor.Set_Position_Unwrap(true);
-    }
-}
-
 const char *module_selection_name(ModuleSelection selection)
 {
     switch (selection)
@@ -336,10 +366,26 @@ bool ensure_parent_directory_exists(const std::string &path)
 LiftFeedbackSample read_lift_feedback_sample(const ModuleInfo &info)
 {
     auto &motor = lift_motor(info.module);
+    const float motor_pos_rad = motor.Get_Now_Radian();
+    const float motor_vel_rad_s = motor.Get_Now_Omega();
+    const float rod_pos_rad = motor_pos_rad / kLiftMotorToRodRatio;
+    const float rod_vel_rad_s = motor_vel_rad_s / kLiftMotorToRodRatio;
 
     LiftFeedbackSample sample {};
     sample.info = &info;
-    sample.motor_pos_rad = motor.Get_Now_Radian();
+    sample.rx_id = motor.DM_CAN_Rx_ID;
+    sample.tx_id = motor.DM_CAN_Tx_ID;
+    sample.online_text = dm_status_name(motor.Get_Status());
+    sample.ctrl_text = dm_control_status_name(motor.Get_Now_Control_Status());
+    sample.motor_pos_rad = motor_pos_rad;
+    sample.motor_vel_rad_s = motor_vel_rad_s;
+    sample.motor_rpm = motor_vel_rad_s * kRadPerSecToRpm;
+    sample.torque_nm = motor.Get_Now_Torque();
+    sample.mos_c = temp_k_to_c_or_nan(motor.Get_Now_MOS_Temperature());
+    sample.rotor_c = temp_k_to_c_or_nan(motor.Get_Now_Rotor_Temperature());
+    sample.rod_pos_rad = rod_pos_rad;
+    sample.rod_vel_rad_s = rod_vel_rad_s;
+    sample.rod_rpm = rod_vel_rad_s * kRadPerSecToRpm;
     return sample;
 }
 
