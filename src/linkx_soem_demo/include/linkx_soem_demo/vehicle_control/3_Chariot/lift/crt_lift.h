@@ -6,6 +6,7 @@
 #include <cstdint>
 
 #define CHARIOT_LIFT_MODULE_NUM 2
+#define CHARIOT_LIFT_TOF_NUM 4
 
 /* 新车头为原车尾：CAN0 对应车头抬升模块，CAN1 对应车尾抬升模块。 */
 enum Enum_Chariot_Lift_Module
@@ -24,6 +25,32 @@ enum Enum_Chariot_Lift_Position_State
 {
     CHARIOT_LIFT_POSITION_RETRACT = 0,
     CHARIOT_LIFT_POSITION_RAISE,
+};
+
+enum Enum_Chariot_Lift_ToF_Sensor
+{
+    CHARIOT_LIFT_TOF_UP_FRONT = 0,
+    CHARIOT_LIFT_TOF_UP_BACK,
+    CHARIOT_LIFT_TOF_DOWN_FRONT,
+    CHARIOT_LIFT_TOF_DOWN_BACK,
+};
+
+enum Enum_Chariot_Lift_Stair_State
+{
+    CHARIOT_LIFT_STAIR_IDLE = 0,
+    CHARIOT_LIFT_STAIR_UP_RAISE_ALL,
+    CHARIOT_LIFT_STAIR_UP_DRIVE_ALL_WAIT_UP_FRONT,
+    CHARIOT_LIFT_STAIR_UP_RETRACT_FRONT,
+    CHARIOT_LIFT_STAIR_UP_REAR_DRIVE_WAIT_DOWN_FRONT,
+    CHARIOT_LIFT_STAIR_UP_RETRACT_REAR,
+    CHARIOT_LIFT_STAIR_UP_CHASSIS_WAIT_DOWN_BACK,
+    CHARIOT_LIFT_STAIR_DOWN_CHASSIS_WAIT_UP_BACK,
+    CHARIOT_LIFT_STAIR_DOWN_RAISE_FRONT,
+    CHARIOT_LIFT_STAIR_DOWN_FRONT_DRIVE_WAIT_DOWN_BACK,
+    CHARIOT_LIFT_STAIR_DOWN_RAISE_REAR,
+    CHARIOT_LIFT_STAIR_DOWN_DRIVE_ALL_EXTRA,
+    CHARIOT_LIFT_STAIR_DOWN_RETRACT_ALL,
+    CHARIOT_LIFT_STAIR_ABORT,
 };
 
 struct ChariotLiftDriveParams
@@ -53,6 +80,17 @@ struct ChariotLiftPositionParams
     float kd;                     // MIT 位置阻尼
 };
 
+struct ChariotLiftToFData
+{
+    bool online = false;          // 最近 500ms 内是否解析到完整 TFmini-S 帧
+    bool valid = false;           // 信号强度是否有效，距离 0/65532 仍通过 range_m 表示特殊状态
+    float range_m = 0.0f;         // m；0cm=-inf，65532cm=+inf，信号无效=NaN
+    uint16_t distance_cm = 0;
+    uint16_t strength = 0;
+    uint16_t temperature_raw = 0;
+    uint32_t frame_count = 0;     // 成功校验的 TFmini-S 帧累计数
+};
+
 class Class_Chariot_Lift
 {
 public:
@@ -61,15 +99,24 @@ public:
     Class_Motor_DM_Normal Motor_Lift[CHARIOT_LIFT_MODULE_NUM];         // 抬升 3519 电机，CAN ID 0x05
 
     void Init(linkx_t *__LinkX_Handler);
-    bool CAN_Rx_Callback(uint8_t CAN_Channel, uint32_t CAN_ID, uint8_t *CAN_Data);
+    bool CAN_Rx_Callback(uint8_t CAN_Channel, uint32_t CAN_ID, uint8_t *CAN_Data, uint8_t CAN_Dlen = 8);
 
     void TIM_100ms_Alive_PeriodElapsedCallback();
     void TIM_2ms_Control_PeriodElapsedCallback();
     void Send_Enable_Burst();
+    void Start_Stair_Up(float raise_angle);
+    void Start_Stair_Down(float raise_angle);
+    void Stop_Stair_Auto();
+    void Set_Both_Lift_Raise(float raise_angle);
+    void Set_Both_Lift_Raise_By_Motor_Angle(float lift_motor_angle);
+    void Set_Both_Lift_Retract();
+    void Set_Both_Lift_Retract_To(float retract_angle);
+    bool Are_Both_Lifts_Reached(Enum_Chariot_Lift_Position_State state);
 
     inline void Set_Control_Type(Enum_Chariot_Lift_Control_Type type);
     inline void Set_Front_Lift_State(Enum_Chariot_Lift_Position_State state);
     inline void Set_Rear_Lift_State(Enum_Chariot_Lift_Position_State state);
+    inline void Set_Raise_Angle(float raise_angle);
     inline void Set_Diff_Drive_Enable(bool enable);
     inline void Set_Diff_Drive_Module(Enum_Chariot_Lift_Module module);
     inline void Set_Target_Diff_Command(float forward_m_s, float yaw_rad_s);
@@ -80,6 +127,15 @@ public:
     inline float Get_Target_Diff_Yaw();
     inline float Get_Target_Left_Omega(Enum_Chariot_Lift_Module module);
     inline float Get_Target_Right_Omega(Enum_Chariot_Lift_Module module);
+    inline const ChariotLiftToFData &Get_ToF_Data(Enum_Chariot_Lift_ToF_Sensor sensor);
+    inline bool Get_ToF_Online(Enum_Chariot_Lift_ToF_Sensor sensor);
+    inline bool Get_ToF_Valid(Enum_Chariot_Lift_ToF_Sensor sensor);
+    inline float Get_ToF_Range_M(Enum_Chariot_Lift_ToF_Sensor sensor);
+    inline uint16_t Get_ToF_Distance_Cm(Enum_Chariot_Lift_ToF_Sensor sensor);
+    inline bool Is_Stair_Auto_Active();
+    inline float Get_Stair_Chassis_Forward();
+    inline Enum_Chariot_Lift_Stair_State Get_Stair_State();
+    const char *Get_Stair_State_Name();
 
 protected:
     Enum_Chariot_Lift_Control_Type Control_Type = CHARIOT_LIFT_CONTROL_DISABLE;
@@ -93,6 +149,12 @@ protected:
     ChariotLiftPositionParams Lift_Params[CHARIOT_LIFT_MODULE_NUM];
 
     float Smooth_Lift_Angle[CHARIOT_LIFT_MODULE_NUM] = {0.0f, 0.0f};
+    float Lift_Profile_Start_Angle[CHARIOT_LIFT_MODULE_NUM] = {0.0f, 0.0f};
+    float Lift_Profile_Target_Angle[CHARIOT_LIFT_MODULE_NUM] = {0.0f, 0.0f};
+    float Lift_Profile_Elapsed[CHARIOT_LIFT_MODULE_NUM] = {0.0f, 0.0f};
+    float Lift_Profile_Duration[CHARIOT_LIFT_MODULE_NUM] = {0.0f, 0.0f};
+    float Target_Lift_Rod_Omega[CHARIOT_LIFT_MODULE_NUM] = {0.0f, 0.0f};
+    bool Lift_Profile_Active[CHARIOT_LIFT_MODULE_NUM] = {false, false};
     float Raw_Target_Left_Omega[CHARIOT_LIFT_MODULE_NUM] = {0.0f, 0.0f};
     float Raw_Target_Right_Omega[CHARIOT_LIFT_MODULE_NUM] = {0.0f, 0.0f};
     float Target_Left_Omega[CHARIOT_LIFT_MODULE_NUM] = {0.0f, 0.0f};
@@ -106,9 +168,43 @@ protected:
     uint16_t control_disable_exit_burst_ticks_ = 0;
     uint16_t enable_service_tick_ = 0;
 
+    ChariotLiftToFData ToF_Data[CHARIOT_LIFT_TOF_NUM];
+    uint8_t ToF_Rx_Index[CHARIOT_LIFT_TOF_NUM] = {0, 0, 0, 0};
+    uint8_t ToF_Rx_Buffer[CHARIOT_LIFT_TOF_NUM][9] = {};
+    uint32_t ToF_Pre_Frame_Count[CHARIOT_LIFT_TOF_NUM] = {0, 0, 0, 0};
+    uint8_t ToF_Offline_Ticks[CHARIOT_LIFT_TOF_NUM] = {0, 0, 0, 0};
+
+    Enum_Chariot_Lift_Stair_State Stair_State = CHARIOT_LIFT_STAIR_IDLE;
+    float Stair_Raise_Angle = -8.0f;
+    float Stair_Chassis_Forward = 0.0f;
+    uint32_t Stair_State_Ticks = 0;
+    bool Stair_Drive_Module_Enable[CHARIOT_LIFT_MODULE_NUM] = {false, false};
+    bool Stair_ToF_Reference_Valid[CHARIOT_LIFT_TOF_NUM] = {false, false, false, false};
+    uint16_t Stair_ToF_Reference_Cm[CHARIOT_LIFT_TOF_NUM] = {0, 0, 0, 0};
+
     void Init_Motor_Params();
+    bool CAN_Rx_ToF(uint8_t CAN_Channel, uint32_t CAN_ID, const uint8_t *CAN_Data, uint8_t CAN_Dlen);
+    void Parse_ToF_Byte(Enum_Chariot_Lift_ToF_Sensor sensor, uint8_t byte);
+    void Update_Stair_Auto();
+    void Enter_Stair_State(Enum_Chariot_Lift_Stair_State state);
+    void Finish_Stair_Auto(bool retract_lift);
+    void Set_Stair_Lift_Command(bool front_enable,
+                                Enum_Chariot_Lift_Position_State front_state,
+                                bool rear_enable,
+                                Enum_Chariot_Lift_Position_State rear_state);
+    void Set_Stair_Drive_Command(bool front_enable, bool rear_enable, float forward_m_s);
+    void Capture_Stair_ToF_Reference(Enum_Chariot_Lift_ToF_Sensor sensor);
+    bool Is_Stair_ToF_Usable(Enum_Chariot_Lift_ToF_Sensor sensor);
+    bool Is_Stair_ToF_Near(Enum_Chariot_Lift_ToF_Sensor sensor);
+    bool Is_Stair_ToF_Jumped(Enum_Chariot_Lift_ToF_Sensor sensor);
+    bool Is_Lift_Profile_Reached(Enum_Chariot_Lift_Module module, Enum_Chariot_Lift_Position_State state);
+    bool Is_Lift_Feedback_Reached(Enum_Chariot_Lift_Module module, Enum_Chariot_Lift_Position_State state);
+    bool Is_Stair_State_Timed_Out(uint32_t timeout_ticks);
     void Ensure_Motor_Enabled(Class_Motor_DM_Normal &motor, bool clear_disable_state);
     void Ensure_All_Motors_Enabled();
+    void Reset_Lift_Profile(Enum_Chariot_Lift_Module module, float lift_rod_angle);
+    void Start_Lift_Profile(Enum_Chariot_Lift_Module module, float target_lift_rod_angle);
+    float Update_Lift_Profile(Enum_Chariot_Lift_Module module, float target_lift_rod_angle);
     void Output_Lift_Motor(Enum_Chariot_Lift_Module module);
     void Kinematics_Diff_Resolution();
     void Apply_Drive_Trapezoid_Profile();
@@ -134,7 +230,15 @@ inline void Class_Chariot_Lift::Set_Control_Type(Enum_Chariot_Lift_Control_Type 
     {
         enable_service_tick_ = 0;
         for (int i = 0; i < CHARIOT_LIFT_MODULE_NUM; ++i)
+        {
             Smooth_Lift_Angle[i] = Motor_To_Lift_Rod_Angle(Motor_Lift[i].Get_Now_Radian());
+            Lift_Profile_Start_Angle[i] = Smooth_Lift_Angle[i];
+            Lift_Profile_Target_Angle[i] = Smooth_Lift_Angle[i];
+            Lift_Profile_Elapsed[i] = 0.0f;
+            Lift_Profile_Duration[i] = 0.0f;
+            Target_Lift_Rod_Omega[i] = 0.0f;
+            Lift_Profile_Active[i] = false;
+        }
     }
     Control_Type = type;
 }
@@ -149,6 +253,13 @@ inline void Class_Chariot_Lift::Set_Rear_Lift_State(Enum_Chariot_Lift_Position_S
 {
     Lift_State[CHARIOT_LIFT_MODULE_REAR] = state;
     Lift_Module_Enable[CHARIOT_LIFT_MODULE_REAR] = true;
+}
+
+inline void Class_Chariot_Lift::Set_Raise_Angle(float raise_angle)
+{
+    Lift_Params[CHARIOT_LIFT_MODULE_FRONT].raise_angle = raise_angle;
+    Lift_Params[CHARIOT_LIFT_MODULE_REAR].raise_angle = raise_angle;
+    Stair_Raise_Angle = raise_angle;
 }
 
 inline void Class_Chariot_Lift::Set_Diff_Drive_Enable(bool enable)
@@ -197,6 +308,47 @@ inline float Class_Chariot_Lift::Get_Target_Left_Omega(Enum_Chariot_Lift_Module 
 inline float Class_Chariot_Lift::Get_Target_Right_Omega(Enum_Chariot_Lift_Module module)
 {
     return Target_Right_Omega[module];
+}
+
+inline const ChariotLiftToFData &Class_Chariot_Lift::Get_ToF_Data(Enum_Chariot_Lift_ToF_Sensor sensor)
+{
+    return ToF_Data[static_cast<int>(sensor)];
+}
+
+inline bool Class_Chariot_Lift::Get_ToF_Online(Enum_Chariot_Lift_ToF_Sensor sensor)
+{
+    return ToF_Data[static_cast<int>(sensor)].online;
+}
+
+inline bool Class_Chariot_Lift::Get_ToF_Valid(Enum_Chariot_Lift_ToF_Sensor sensor)
+{
+    return ToF_Data[static_cast<int>(sensor)].valid;
+}
+
+inline float Class_Chariot_Lift::Get_ToF_Range_M(Enum_Chariot_Lift_ToF_Sensor sensor)
+{
+    return ToF_Data[static_cast<int>(sensor)].range_m;
+}
+
+inline uint16_t Class_Chariot_Lift::Get_ToF_Distance_Cm(Enum_Chariot_Lift_ToF_Sensor sensor)
+{
+    return ToF_Data[static_cast<int>(sensor)].distance_cm;
+}
+
+inline bool Class_Chariot_Lift::Is_Stair_Auto_Active()
+{
+    return Stair_State != CHARIOT_LIFT_STAIR_IDLE &&
+           Stair_State != CHARIOT_LIFT_STAIR_ABORT;
+}
+
+inline float Class_Chariot_Lift::Get_Stair_Chassis_Forward()
+{
+    return Stair_Chassis_Forward;
+}
+
+inline Enum_Chariot_Lift_Stair_State Class_Chariot_Lift::Get_Stair_State()
+{
+    return Stair_State;
 }
 
 #endif // CRT_LIFT_H

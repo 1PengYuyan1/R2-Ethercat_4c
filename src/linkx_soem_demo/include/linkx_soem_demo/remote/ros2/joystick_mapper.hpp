@@ -19,7 +19,7 @@ public:
     // 计算底盘指令
     ChassisCommand processChassis(const std::vector<float>& axes, const std::vector<int>& buttons);
 
-    // 计算按键状态（位掩码）
+    // 计算按键状态（键值码/组合键码）
     uint16_t processButtons(const std::vector<float>& axes, const std::vector<int>& buttons);
 
     private:

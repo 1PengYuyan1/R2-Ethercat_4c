@@ -10,6 +10,8 @@
 #define LogF710_Key_B     0x0003
 #define LogF710_Key_Y     0x0004
 #define LogF710_Key_LB    0x0010
+#define LogF710_Key_LB_X  0x0011
+#define LogF710_Key_LB_Y  0x0014
 #define LogF710_Key_LT    0x0020
 #define LogF710_Key_RB    0x0030
 #define LogF710_Key_RT    0x0040

@@ -1,10 +1,13 @@
 // 上位机版 Class_Robot 实现：把 ROS /chassis/cmd_vel(高优先级)
 // + /chassis/remote_cmd_vel(遥控低优先级) + /chassis/buttons
-// + /imu 转化为底盘速度命令；通过 linkx_t 推送给 EtherCAT-CAN 桥；
+// 转化为底盘速度命令；IMU 航向保持模块订阅 /IMU_data；
+// 通过 linkx_t 推送给 EtherCAT-CAN 桥；
 // 把 chassis 实际速度回报到 /chassis/odom_twist。
 //
 // 工况：全向轮底盘（4 × DM3519 MIT，分布在 LinkX channel 0/1）
 //      + 前/后抬升机构（新车头为原车尾：front=ch0，rear=ch1）
+//      + 气夹爪下位机（默认 LinkX CAN0，ID 0x06）
+//      + 辅助 DM 电机（LinkX CAN0，Tx ID 0x07，Rx ID 0x17）
 //
 // 调度:
 //   robot.Init(linkx) 由 task::Robot_Control_Loop 在 SOEM 主站启动后调用一次
@@ -24,79 +27,16 @@ constexpr int64_t kCmdTimeoutNs = 200LL * 1000LL * 1000LL;  // 200 ms
 constexpr int64_t kButtonTimeoutNs = 500LL * 1000LL * 1000LL;  // 500 ms
 constexpr const char *kRosCmdTopic = "/chassis/cmd_vel";
 constexpr const char *kRemoteCmdTopic = "/chassis/remote_cmd_vel";
-
-constexpr float kOpsYawHoldMinLinearSpeed = 0.08f;      // m/s
-constexpr float kOpsYawHoldManualOmegaDeadband = 0.05f; // rad/s
-constexpr float kDegToRad = 0.017453292519943295769f;
-constexpr float kOpsYawHoldKp = 1.20f * kDegToRad;      // rad/s per deg
-constexpr float kOpsYawHoldKd = 0.08f * kDegToRad;      // rad/s per deg/s
-constexpr float kOpsYawHoldMaxCorrection = 0.35f;       // rad/s
-
-constexpr float kOpsLateralHoldMinLinearSpeed = 0.08f;       // m/s
-constexpr float kOpsLateralHoldManualOmegaDeadband = 0.05f;  // rad/s
-constexpr float kOpsLateralLowSpeedThreshold = 0.14f;        // m/s
-constexpr float kOpsLateralKpLowSpeed = 1.50f;               // m/s per m error
-constexpr float kOpsLateralKpHighSpeed = 1.00f;              // m/s per m error
-constexpr float kOpsLateralSpeedLimitLow = 0.10f;            // m/s
-constexpr float kOpsLateralSpeedLimitHigh = 0.12f;           // m/s
-constexpr float kOpsLateralDirectionResetDot = 0.94f;        // about 20 deg
-constexpr float kOpsYawToBodyFrameOffsetDeg = 90.0f;         // OPS yaw to new chassis body yaw
-
-struct Vec2
-{
-    float x = 0.0f;
-    float y = 0.0f;
-};
-
-float clampf(float value, float min_value, float max_value)
-{
-    if (value < min_value) return min_value;
-    if (value > max_value) return max_value;
-    return value;
-}
-
-float normalize_angle_deg(float angle)
-{
-    while (angle > 180.0f) angle -= 360.0f;
-    while (angle < -180.0f) angle += 360.0f;
-    return angle;
-}
-
-float dot(Vec2 a, Vec2 b)
-{
-    return a.x * b.x + a.y * b.y;
-}
-
-Vec2 normalize_or_forward(Vec2 v)
-{
-    const float n = std::sqrt(dot(v, v));
-    if (n < 1e-4f)
-    {
-        return {1.0f, 0.0f};
-    }
-    return {v.x / n, v.y / n};
-}
-
-Vec2 body_to_world(Vec2 body, float yaw_rad)
-{
-    const float c = std::cos(yaw_rad);
-    const float s = std::sin(yaw_rad);
-    return {
-        body.x * c - body.y * s,
-        body.x * s + body.y * c,
-    };
-}
-
-Vec2 world_to_body(Vec2 world, float yaw_rad)
-{
-    const float c = std::cos(yaw_rad);
-    const float s = std::sin(yaw_rad);
-    return {
-        world.x * c + world.y * s,
-       -world.x * s + world.y * c,
-    };
-}
-
+constexpr float kManualBothLiftMotorRaiseAngle = -39.0f;
+constexpr float kManualBothLiftRetractAngle = -0.01f;
+constexpr float kAuxiliaryMotorRaisedAngle = 1.5f;
+constexpr float kAuxiliaryMotorHomeAngle = 0.227f;
+constexpr float kAuxiliaryMotorReachedTolerance = 0.05f;
+constexpr float kAuxiliaryMotorKp = 20.0f;
+constexpr float kAuxiliaryMotorKd = 1.2f;
+constexpr uint8_t kAuxiliaryMotorCanChannel = 0U;
+constexpr uint8_t kAuxiliaryMotorRxId = 0x17U;
+constexpr uint8_t kAuxiliaryMotorTxId = 0x07U;
 }
 
 void Class_Robot::Init(linkx_t *__LinkX_Handler)
@@ -105,10 +45,21 @@ void Class_Robot::Init(linkx_t *__LinkX_Handler)
 
     Chassis.Init(LinkX_Handler);
     Chassis.Init_Motor_Params();
+    imu_heading_hold_.Init(MAX_OMNI_CHASSIS_OMEGA);
 
     Lift.Init(LinkX_Handler);
-
-    Navigation.Init();
+    Gripper.Init(LinkX_Handler);
+    Auxiliary_Motor.Init(LinkX_Handler,
+                         kAuxiliaryMotorCanChannel,
+                         kAuxiliaryMotorRxId,
+                         kAuxiliaryMotorTxId,
+                         Motor_DM_Control_Method_NORMAL_MIT,
+                         12.5f,
+                         395.0f,
+                         7.8f,
+                         9.2f);
+    Auxiliary_Motor.Set_Use_FDCAN(true);
+    Auxiliary_Motor.Set_Force_Output_Without_Feedback(false);
 
     _Verify_Motor_ID_Uniqueness();
 }
@@ -116,9 +67,8 @@ void Class_Robot::Init(linkx_t *__LinkX_Handler)
 void Class_Robot::_Verify_Motor_ID_Uniqueness()
 {
     // R2 CAN 通道分布（新车头为原车尾）：
-    //   ch0：index 1/2 全向轮（Tx 0x02/0x01）+ 前抬升（Tx 0x03/0x04/0x05）
+    //   ch0：index 1/2 全向轮（Tx 0x02/0x01）+ 前抬升（Tx 0x03/0x04/0x05）+ 辅助电机（Tx 0x07）
     //   ch1：index 0/3 全向轮（Tx 0x02/0x01）+ 后抬升（Tx 0x03/0x04/0x05）
-    //   ch2：OPS（非 DM）
     // 同通道内 Rx ID 必须互不相同。
 
     auto warn_dup = [](const char *channel_name, int a, int b, uint16_t id) {
@@ -133,14 +83,15 @@ void Class_Robot::_Verify_Motor_ID_Uniqueness()
                 if (ids[i] == ids[j]) warn_dup(channel_name, i, j, ids[i]);
     };
 
-    uint16_t ch0_ids[5] = {
+    uint16_t ch0_ids[6] = {
         Chassis.Motor_Wheel[1].DM_CAN_Rx_ID,
         Chassis.Motor_Wheel[2].DM_CAN_Rx_ID,
         Lift.Motor_Drive_Left[CHARIOT_LIFT_MODULE_FRONT].DM_CAN_Rx_ID,
         Lift.Motor_Drive_Right[CHARIOT_LIFT_MODULE_FRONT].DM_CAN_Rx_ID,
         Lift.Motor_Lift[CHARIOT_LIFT_MODULE_FRONT].DM_CAN_Rx_ID,
+        Auxiliary_Motor.DM_CAN_Rx_ID,
     };
-    check_pair("ch0 (omni+front lift)", ch0_ids, 5);
+    check_pair("ch0 (omni+front lift+aux motor)", ch0_ids, 6);
 
     uint16_t ch1_ids[5] = {
         Chassis.Motor_Wheel[0].DM_CAN_Rx_ID,
@@ -165,6 +116,7 @@ void Class_Robot::TIM_100ms_Alive_PeriodElapsedCallback()
 {
     Chassis.TIM_100ms_Alive_PeriodElapsedCallback();
     Lift.TIM_100ms_Alive_PeriodElapsedCallback();
+    Auxiliary_Motor.TIM_Alive_PeriodElapsedCallback();
 }
 
 void Class_Robot::TIM_2ms_Calculate_PeriodElapsedCallback()
@@ -221,16 +173,9 @@ void Class_Robot::Start_ROS2_Bridge()
         "/chassis/buttons", 20,
         [this](const std_msgs::msg::UInt16::SharedPtr msg) { _Update_Button_Code(msg->data); });
 
-    sub_imu_ = bridge_node_->create_subscription<sensor_msgs::msg::Imu>(
-        "/imu", 20,
-        [this](const sensor_msgs::msg::Imu::SharedPtr msg)
-        {
-            latest_imu_omega_z_.store(static_cast<float>(msg->angular_velocity.z));
-        });
+    imu_heading_hold_.Start(bridge_node_);
 
     pub_odom_ = bridge_node_->create_publisher<geometry_msgs::msg::Twist>("/chassis/odom_twist", 50);
-
-    ops.init(bridge_node_.get());
 
     RCLCPP_INFO(bridge_node_->get_logger(),
                 "chassis command priority: ROS2 %s > remote %s",
@@ -247,9 +192,8 @@ void Class_Robot::Stop_ROS2_Bridge()
     ros_bridge_running_.store(false);
     if (ros_spin_thread_.joinable()) ros_spin_thread_.join();
 
-    ops.shutdown();
     pub_odom_.reset();
-    sub_imu_.reset();
+    imu_heading_hold_.Stop();
     sub_buttons_.reset();
     sub_remote_cmd_.reset();
     sub_cmd_.reset();
@@ -317,12 +261,32 @@ void Class_Robot::_Update_Button_Code(uint16_t button_code)
     }
 }
 
+Class_Robot::ButtonSnapshot Class_Robot::Get_Button_Snapshot()
+{
+    std::lock_guard<std::mutex> lock(cmd_mtx_);
+
+    ButtonSnapshot snapshot;
+    snapshot.code = ros_cmd_.button_code;
+    snapshot.has_buttons = ros_cmd_.has_buttons;
+    snapshot.last_button_ns = ros_cmd_.last_button_ns;
+
+    const int64_t now = now_ns();
+    if (snapshot.has_buttons && snapshot.last_button_ns > 0)
+    {
+        const int64_t age_ns = now - snapshot.last_button_ns;
+        snapshot.age_ms = age_ns / (1000LL * 1000LL);
+        snapshot.recent = age_ns <= kButtonTimeoutNs;
+    }
+
+    return snapshot;
+}
+
 // --- CAN 路由 --------------------------------------------------------------
 //
 // 全向轮工况分发策略（新车头为原车尾）：
-//   - ch0 → index 1/2 全向轮 + 前抬升，通过 Rx_ID 区分（0x11..0x15）
+//   - ch0 → index 1/2 全向轮 + 前抬升 + 辅助电机，通过 Rx_ID 区分（0x11..0x17）
 //   - ch1 → index 0/3 全向轮 + 后抬升，通过 Rx_ID 区分（0x11..0x15）
-//   - ch2 → OPS(0x01)
+//   - ch2 → ToF(CH2 ID 0x01..0x04)
 //   - 其它通道 / 通道+ID 不匹配 → 累计到 unhandled_can_frames_
 
 void Class_Robot::CAN_Rx_Callback(uint8_t CAN_Channel, uint32_t CAN_ID, uint8_t *CAN_Data, uint8_t CAN_Dlen)
@@ -349,22 +313,23 @@ void Class_Robot::CAN_Rx_Callback(uint8_t CAN_Channel, uint32_t CAN_ID, uint8_t 
             const int indices[] = {1, 2};
             handled = dispatch_wheel(indices, 2);
             if (!handled)
-                handled = Lift.CAN_Rx_Callback(CAN_Channel, CAN_ID, CAN_Data);
+                handled = Lift.CAN_Rx_Callback(CAN_Channel, CAN_ID, CAN_Data, CAN_Dlen);
+            if (!handled && can_id_std == Auxiliary_Motor.DM_CAN_Rx_ID)
+            {
+                Auxiliary_Motor.CAN_RxCpltCallback(CAN_Data);
+                handled = true;
+            }
             break;
         }
         case 1: {
             const int indices[] = {0, 3};
             handled = dispatch_wheel(indices, 2);
             if (!handled)
-                handled = Lift.CAN_Rx_Callback(CAN_Channel, CAN_ID, CAN_Data);
+                handled = Lift.CAN_Rx_Callback(CAN_Channel, CAN_ID, CAN_Data, CAN_Dlen);
             break;
         }
         case 2:
-            if (can_id_std == 0x01U)
-            {
-                ops.CAN_RxCpltCallback(CAN_Data, CAN_Dlen);
-                handled = true;
-            }
+            handled = Lift.CAN_Rx_Callback(CAN_Channel, CAN_ID, CAN_Data, CAN_Dlen);
             break;
         default: /* ch3 未配置任何执行器 */  break;
     }
@@ -424,24 +389,13 @@ void Class_Robot::_Chassis_Control()
         if (omega_cmd >  MAX_OMNI_CHASSIS_OMEGA) omega_cmd =  MAX_OMNI_CHASSIS_OMEGA;
         if (omega_cmd < -MAX_OMNI_CHASSIS_OMEGA) omega_cmd = -MAX_OMNI_CHASSIS_OMEGA;
 
-        _Apply_OPS_Lateral_Correction(vx_cmd, vy_cmd, omega_cmd);
-
-        float corrected_omega = 0.0f;
-        if (lift_diff_mode)
-        {
-            ops_yaw_hold_active_ = false;
-            ops_yaw_hold_last_output_ = 0.0f;
-            ops_yaw_hold_last_error_ = 0.0f;
-        }
-        else
-        {
-            corrected_omega = _Apply_OPS_Yaw_Hold(vx_cmd, vy_cmd, omega_cmd);
-        }
+        const float omega_out =
+            imu_heading_hold_.Correct_Omega(vx_cmd, vy_cmd, omega_cmd, lift_diff_mode, now);
 
         Chassis.Set_Chassis_Control_Type(Chassis_Omni_Control_Type_ENABLE);
         Chassis.Set_Target_Velocity_X(vx_cmd);
         Chassis.Set_Target_Velocity_Y(vy_cmd);
-        Chassis.Set_Target_Omega(corrected_omega);
+        Chassis.Set_Target_Omega(lift_diff_mode ? 0.0f : omega_out);
         if ((now - last_chassis_diag_ns_) >= 1000LL * 1000LL * 1000LL)
         {
             last_chassis_diag_ns_ = now;
@@ -454,151 +408,7 @@ void Class_Robot::_Chassis_Control()
         Chassis.Set_Target_Velocity_X(0.0f);
         Chassis.Set_Target_Velocity_Y(0.0f);
         Chassis.Set_Target_Omega(0.0f);
-        ops_yaw_hold_active_ = false;
-        ops_yaw_hold_last_output_ = 0.0f;
-        ops_yaw_hold_last_error_ = 0.0f;
-        _Reset_OPS_Lateral_Hold();
     }
-}
-
-void Class_Robot::_Apply_OPS_Lateral_Correction(float &vx, float &vy, float omega_cmd)
-{
-    const float linear_speed = std::sqrt(vx * vx + vy * vy);
-    const bool manual_rotate = std::fabs(omega_cmd) > kOpsLateralHoldManualOmegaDeadband;
-    const bool should_hold_line = linear_speed > kOpsLateralHoldMinLinearSpeed && !manual_rotate;
-
-    if (!should_hold_line || !ops.isConnected())
-    {
-        _Reset_OPS_Lateral_Hold();
-        return;
-    }
-
-    const Struct_OPS_Rx_Data ops_data = ops.getData();
-    if (!std::isfinite(ops_data.Yaw) ||
-        !std::isfinite(ops_data.Pos_X) ||
-        !std::isfinite(ops_data.Pos_Y))
-    {
-        _Reset_OPS_Lateral_Hold();
-        return;
-    }
-
-    const Vec2 body_dir = normalize_or_forward({vx, vy});
-    if (ops_lateral_hold_active_)
-    {
-        const Vec2 locked_dir = normalize_or_forward({
-            ops_lateral_hold_body_dir_x_,
-            ops_lateral_hold_body_dir_y_,
-        });
-        if (dot(body_dir, locked_dir) < kOpsLateralDirectionResetDot)
-        {
-            _Reset_OPS_Lateral_Hold();
-        }
-    }
-
-    if (!ops_lateral_hold_active_)
-    {
-        ops_lateral_hold_yaw_target_ =
-            ops_yaw_hold_active_ ? ops_yaw_hold_target_ : normalize_angle_deg(ops_data.Yaw);
-        ops_lateral_hold_start_x_ = ops_data.Pos_X;
-        ops_lateral_hold_start_y_ = ops_data.Pos_Y;
-        ops_lateral_hold_body_dir_x_ = body_dir.x;
-        ops_lateral_hold_body_dir_y_ = body_dir.y;
-        ops_lateral_hold_active_ = true;
-    }
-
-    const Vec2 locked_body_dir = normalize_or_forward({
-        ops_lateral_hold_body_dir_x_,
-        ops_lateral_hold_body_dir_y_,
-    });
-    const float yaw_target_deg = normalize_angle_deg(ops_lateral_hold_yaw_target_ +
-                                                    kOpsYawToBodyFrameOffsetDeg);
-    const Vec2 world_dir = normalize_or_forward(body_to_world(locked_body_dir,
-                                                             yaw_target_deg * kDegToRad));
-    const Vec2 world_lat {-world_dir.y, world_dir.x};
-    const Vec2 delta_pos {
-        ops_data.Pos_X - ops_lateral_hold_start_x_,
-        ops_data.Pos_Y - ops_lateral_hold_start_y_,
-    };
-    const float lateral_error_mm = dot(delta_pos, world_lat);
-
-    const bool low_speed = linear_speed < kOpsLateralLowSpeedThreshold;
-    const float lateral_kp = low_speed ? kOpsLateralKpLowSpeed : kOpsLateralKpHighSpeed;
-    const float lateral_limit = low_speed ? kOpsLateralSpeedLimitLow : kOpsLateralSpeedLimitHigh;
-    const float lateral_correction =
-        clampf(-lateral_kp * lateral_error_mm * 0.001f,
-               -lateral_limit,
-                lateral_limit);
-
-    const Vec2 desired_world {
-        world_dir.x * linear_speed + world_lat.x * lateral_correction,
-        world_dir.y * linear_speed + world_lat.y * lateral_correction,
-    };
-    const Vec2 desired_body =
-        world_to_body(desired_world,
-                      normalize_angle_deg(ops_data.Yaw + kOpsYawToBodyFrameOffsetDeg) * kDegToRad);
-
-    vx = desired_body.x;
-    vy = desired_body.y;
-
-    const float corrected_speed = std::sqrt(vx * vx + vy * vy);
-    if (corrected_speed > MAX_OMNI_CHASSIS_SPEED && corrected_speed > 1e-4f)
-    {
-        const float scale = MAX_OMNI_CHASSIS_SPEED / corrected_speed;
-        vx *= scale;
-        vy *= scale;
-    }
-
-    ops_lateral_hold_last_error_mm_ = lateral_error_mm;
-    ops_lateral_hold_last_output_ = lateral_correction;
-}
-
-float Class_Robot::_Apply_OPS_Yaw_Hold(float vx, float vy, float omega_cmd)
-{
-    const float linear_speed = std::sqrt(vx * vx + vy * vy);
-    const bool manual_rotate = std::fabs(omega_cmd) > kOpsYawHoldManualOmegaDeadband;
-    const bool should_hold_yaw = linear_speed > kOpsYawHoldMinLinearSpeed && !manual_rotate;
-
-    if (!should_hold_yaw || !ops.isConnected())
-    {
-        ops_yaw_hold_active_ = false;
-        ops_yaw_hold_last_output_ = 0.0f;
-        ops_yaw_hold_last_error_ = 0.0f;
-        return omega_cmd;
-    }
-
-    const Struct_OPS_Rx_Data ops_data = ops.getData();
-    if (!std::isfinite(ops_data.Yaw))
-    {
-        ops_yaw_hold_active_ = false;
-        ops_yaw_hold_last_output_ = 0.0f;
-        ops_yaw_hold_last_error_ = 0.0f;
-        return omega_cmd;
-    }
-
-    if (!ops_yaw_hold_active_)
-    {
-        ops_yaw_hold_target_ = normalize_angle_deg(ops_data.Yaw);
-        ops_yaw_hold_active_ = true;
-    }
-
-    const float yaw_now = normalize_angle_deg(ops_data.Yaw);
-    const float yaw_error = normalize_angle_deg(ops_yaw_hold_target_ - yaw_now);
-    const float yaw_rate = std::isfinite(ops_data.Omega_Z) ? ops_data.Omega_Z : 0.0f;
-    const float correction =
-        clampf(kOpsYawHoldKp * yaw_error - kOpsYawHoldKd * yaw_rate,
-               -kOpsYawHoldMaxCorrection,
-                kOpsYawHoldMaxCorrection);
-
-    ops_yaw_hold_last_error_ = yaw_error;
-    ops_yaw_hold_last_output_ = correction;
-    return correction;
-}
-
-void Class_Robot::_Reset_OPS_Lateral_Hold()
-{
-    ops_lateral_hold_active_ = false;
-    ops_lateral_hold_last_error_mm_ = 0.0f;
-    ops_lateral_hold_last_output_ = 0.0f;
 }
 
 void Class_Robot::_Update_Chassis_Remote_Gate(bool buttons_recent, uint16_t button_code)
@@ -619,6 +429,7 @@ void Class_Robot::_Update_Chassis_Remote_Gate(bool buttons_recent, uint16_t butt
         if (chassis_remote_enabled_ || back_rising)
         {
             chassis_remote_enabled_ = false;
+            _Disable_Auxiliary_Motor();
             _Log_Chassis_Start_Gate("BACK pressed: chassis remote DISABLED");
         }
         last_chassis_button_code_ = button_code;
@@ -630,10 +441,115 @@ void Class_Robot::_Update_Chassis_Remote_Gate(bool buttons_recent, uint16_t butt
         chassis_remote_enabled_ = true;
         Lift.Set_Control_Type(CHARIOT_LIFT_CONTROL_ENABLE);
         Lift.Send_Enable_Burst();
+        _Enable_Auxiliary_Motor();
         _Log_Chassis_Start_Gate("START pressed: chassis remote ENABLED");
     }
 
     last_chassis_button_code_ = button_code;
+}
+
+void Class_Robot::_Enable_Auxiliary_Motor()
+{
+    Auxiliary_Motor.CAN_Send_Enter();
+}
+
+void Class_Robot::_Disable_Auxiliary_Motor()
+{
+    _Cancel_Lift_Aux_Sequence();
+    Auxiliary_Motor.Set_Control_Status(Motor_DM_Status_DISABLE);
+    Auxiliary_Motor.Set_Control_Maintain_Postion(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    Auxiliary_Motor.CAN_Send_Exit();
+}
+
+void Class_Robot::_Cancel_Lift_Aux_Sequence()
+{
+    lift_aux_sequence_state_ = LiftAuxSequenceState::IDLE;
+    auxiliary_motor_command_enable_ = false;
+}
+
+void Class_Robot::_Start_Lift_Aux_Raise_Sequence()
+{
+    Lift.Set_Both_Lift_Raise_By_Motor_Angle(kManualBothLiftMotorRaiseAngle);
+    auxiliary_motor_target_angle_ = kAuxiliaryMotorRaisedAngle;
+    auxiliary_motor_command_enable_ = false;
+    lift_aux_sequence_state_ = LiftAuxSequenceState::RAISE_WAIT_LIFT_REACHED;
+}
+
+void Class_Robot::_Start_Lift_Aux_Home_Sequence()
+{
+    Lift.Stop_Stair_Auto();
+    auxiliary_motor_target_angle_ = kAuxiliaryMotorHomeAngle;
+    auxiliary_motor_command_enable_ = true;
+    lift_aux_sequence_state_ = LiftAuxSequenceState::HOME_MOVE_AUXILIARY;
+}
+
+void Class_Robot::_Update_Lift_Aux_Sequence()
+{
+    switch (lift_aux_sequence_state_)
+    {
+        case LiftAuxSequenceState::RAISE_WAIT_LIFT_REACHED:
+            if (Lift.Are_Both_Lifts_Reached(CHARIOT_LIFT_POSITION_RAISE))
+            {
+                auxiliary_motor_target_angle_ = kAuxiliaryMotorRaisedAngle;
+                auxiliary_motor_command_enable_ = true;
+                lift_aux_sequence_state_ = LiftAuxSequenceState::RAISE_MOVE_AUXILIARY;
+            }
+            break;
+
+        case LiftAuxSequenceState::RAISE_MOVE_AUXILIARY:
+            if (_Is_Auxiliary_Motor_Reached(kAuxiliaryMotorRaisedAngle))
+                lift_aux_sequence_state_ = LiftAuxSequenceState::RAISE_DONE;
+            break;
+
+        case LiftAuxSequenceState::HOME_WAIT_LIFT_REACHED:
+            if (Lift.Are_Both_Lifts_Reached(CHARIOT_LIFT_POSITION_RETRACT))
+                lift_aux_sequence_state_ = LiftAuxSequenceState::HOME_DONE;
+            break;
+
+        case LiftAuxSequenceState::HOME_MOVE_AUXILIARY:
+            if (_Is_Auxiliary_Motor_Reached(kAuxiliaryMotorHomeAngle))
+            {
+                Lift.Set_Both_Lift_Retract_To(kManualBothLiftRetractAngle);
+                lift_aux_sequence_state_ = LiftAuxSequenceState::HOME_WAIT_LIFT_REACHED;
+            }
+            break;
+
+        case LiftAuxSequenceState::RAISE_DONE:
+        case LiftAuxSequenceState::HOME_DONE:
+        case LiftAuxSequenceState::IDLE:
+        default:
+            break;
+    }
+
+    _Output_Auxiliary_Motor();
+}
+
+void Class_Robot::_Output_Auxiliary_Motor()
+{
+    if (!auxiliary_motor_command_enable_)
+        return;
+
+    if (Auxiliary_Motor.Get_Status() != Motor_DM_Status_ENABLE)
+    {
+        Auxiliary_Motor.CAN_Send_Enter();
+    }
+    else
+    {
+        Auxiliary_Motor.Set_Control_Maintain_Postion(auxiliary_motor_target_angle_,
+                                                     0.0f,
+                                                     0.0f,
+                                                     kAuxiliaryMotorKp,
+                                                     kAuxiliaryMotorKd);
+    }
+
+    Auxiliary_Motor.TIM_Send_PeriodElapsedCallback();
+}
+
+bool Class_Robot::_Is_Auxiliary_Motor_Reached(float target_angle)
+{
+    return Auxiliary_Motor.Get_Status() == Motor_DM_Status_ENABLE &&
+           std::fabs(Auxiliary_Motor.Get_Now_Radian() - target_angle) <=
+               kAuxiliaryMotorReachedTolerance;
 }
 
 void Class_Robot::_Log_Chassis_Start_Gate(const char *msg)
@@ -648,7 +564,6 @@ void Class_Robot::_Log_Chassis_Diagnostic(bool ros_cmd_recent,
                                           bool remote_cmd_recent,
                                           ChassisCommandSource source)
 {
-    const bool ops_connected = ops.isConnected();
     const uint64_t unhandled = unhandled_can_frames_.load(std::memory_order_relaxed);
     const char *source_name = "none";
     switch (source)
@@ -661,27 +576,19 @@ void Class_Robot::_Log_Chassis_Diagnostic(bool ros_cmd_recent,
     if (bridge_node_)
     {
         RCLCPP_INFO(bridge_node_->get_logger(),
-                    "chassis diag: source=%s remote=%d ros_cmd_recent=%d remote_cmd_recent=%d ops=%d"
+                    "chassis diag: source=%s remote=%d ros_cmd_recent=%d remote_cmd_recent=%d"
                     " target=(%.3f, %.3f, %.3f)"
-                    " now=(%.3f, %.3f, %.3f) yaw_hold=%d yaw_err=%.2fdeg yaw_out=%.3f"
-                    " lat_hold=%d lat_err=%.1fmm lat_out=%.3f unhandled_can=%llu",
+                    " now=(%.3f, %.3f, %.3f) unhandled_can=%llu",
                     source_name,
                     chassis_remote_enabled_ ? 1 : 0,
                     ros_cmd_recent ? 1 : 0,
                     remote_cmd_recent ? 1 : 0,
-                    ops_connected ? 1 : 0,
                     Chassis.Get_Target_Velocity_X(),
                     Chassis.Get_Target_Velocity_Y(),
                     Chassis.Get_Target_Omega(),
                     Chassis.Get_Now_Velocity_X(),
                     Chassis.Get_Now_Velocity_Y(),
                     Chassis.Get_Now_Omega(),
-                    ops_yaw_hold_active_ ? 1 : 0,
-                    ops_yaw_hold_last_error_,
-                    ops_yaw_hold_last_output_,
-                    ops_lateral_hold_active_ ? 1 : 0,
-                    ops_lateral_hold_last_error_mm_,
-                    ops_lateral_hold_last_output_,
                     static_cast<unsigned long long>(unhandled));
     }
     else
@@ -691,19 +598,12 @@ void Class_Robot::_Log_Chassis_Diagnostic(bool ros_cmd_recent,
                   << " remote=" << (chassis_remote_enabled_ ? 1 : 0)
                   << " ros_cmd_recent=" << (ros_cmd_recent ? 1 : 0)
                   << " remote_cmd_recent=" << (remote_cmd_recent ? 1 : 0)
-                  << " ops=" << (ops_connected ? 1 : 0)
                   << " target=(" << Chassis.Get_Target_Velocity_X()
                   << ", " << Chassis.Get_Target_Velocity_Y()
                   << ", " << Chassis.Get_Target_Omega() << ")"
                   << " now=(" << Chassis.Get_Now_Velocity_X()
                   << ", " << Chassis.Get_Now_Velocity_Y()
                   << ", " << Chassis.Get_Now_Omega() << ")"
-                  << " yaw_hold=" << (ops_yaw_hold_active_ ? 1 : 0)
-                  << " yaw_err_deg=" << ops_yaw_hold_last_error_
-                  << " yaw_out=" << ops_yaw_hold_last_output_
-                  << " lat_hold=" << (ops_lateral_hold_active_ ? 1 : 0)
-                  << " lat_err_mm=" << ops_lateral_hold_last_error_mm_
-                  << " lat_out=" << ops_lateral_hold_last_output_
                   << " unhandled_can=" << unhandled
                   << std::endl;
     }
@@ -726,14 +626,18 @@ void Class_Robot::_Lift_Control()
 
     if (!chassis_remote_enabled_)
     {
+        _Cancel_Lift_Aux_Sequence();
+        Lift.Stop_Stair_Auto();
         Lift.Set_Diff_Drive_Enable(false);
         Lift.Set_Target_Diff_Command(0.0f, 0.0f);
         Lift.Set_Control_Type(CHARIOT_LIFT_CONTROL_DISABLE);
         last_lift_button_code_ = buttons_recent ? snapshot.button_code : LogF710_Key_IDLE;
+        last_gripper_button_code_ = buttons_recent ? snapshot.button_code : LogF710_Key_IDLE;
         return;
     }
 
     Lift.Set_Control_Type(CHARIOT_LIFT_CONTROL_ENABLE);
+    _Gripper_Control(buttons_recent, snapshot.button_code);
 
     auto log_lift_action = [this](const char *msg) {
         if (bridge_node_)
@@ -744,6 +648,9 @@ void Class_Robot::_Lift_Control()
 
     if (buttons_recent)
     {
+        const bool last_lift_was_gripper_combo =
+            (last_lift_button_code_ == LogF710_Key_LB_X) ||
+            (last_lift_button_code_ == LogF710_Key_LB_Y);
         const bool a_rising =
             (snapshot.button_code == LogF710_Key_A) &&
             (last_lift_button_code_ != LogF710_Key_A);
@@ -752,29 +659,52 @@ void Class_Robot::_Lift_Control()
             (last_lift_button_code_ != LogF710_Key_B);
         const bool x_rising =
             (snapshot.button_code == LogF710_Key_X) &&
-            (last_lift_button_code_ != LogF710_Key_X);
+            (last_lift_button_code_ != LogF710_Key_X) &&
+            !last_lift_was_gripper_combo;
+        const bool y_rising =
+            (snapshot.button_code == LogF710_Key_Y) &&
+            (last_lift_button_code_ != LogF710_Key_Y) &&
+            !last_lift_was_gripper_combo;
+        const bool up_rising =
+            (snapshot.button_code == LogF710_Key_Up) &&
+            (last_lift_button_code_ != LogF710_Key_Up);
+        const bool down_rising =
+            (snapshot.button_code == LogF710_Key_Down) &&
+            (last_lift_button_code_ != LogF710_Key_Down);
 
-        if (a_rising)
+        if (x_rising)
         {
-            Lift.Set_Control_Type(CHARIOT_LIFT_CONTROL_ENABLE);
-            Lift.Set_Front_Lift_State(CHARIOT_LIFT_POSITION_RAISE);
-            Lift.Set_Rear_Lift_State(CHARIOT_LIFT_POSITION_RAISE);
-            Lift.Set_Diff_Drive_Module(CHARIOT_LIFT_MODULE_FRONT);
-            Lift.Set_Diff_Drive_Enable(true);
-            log_lift_action("A pressed: front+rear lift RAISE, right stick controls front differential drive");
+            _Cancel_Lift_Aux_Sequence();
+            Lift.Start_Stair_Up(-8.0f);
+            log_lift_action("X pressed: stair UP auto start, raise_angle=-8.0");
+        }
+        else if (y_rising)
+        {
+            _Cancel_Lift_Aux_Sequence();
+            Lift.Start_Stair_Down(-8.0f);
+            log_lift_action("Y pressed: stair DOWN auto start, raise_angle=-8.0");
+        }
+        else if (a_rising)
+        {
+            _Cancel_Lift_Aux_Sequence();
+            Lift.Start_Stair_Up(-14.3f);
+            log_lift_action("A pressed: stair UP auto start, raise_angle=-14.3");
         }
         else if (b_rising)
         {
-            Lift.Set_Control_Type(CHARIOT_LIFT_CONTROL_ENABLE);
-            Lift.Set_Front_Lift_State(CHARIOT_LIFT_POSITION_RETRACT);
-            log_lift_action("B pressed: front lift RETRACT, stick mapping unchanged");
+            _Cancel_Lift_Aux_Sequence();
+            Lift.Start_Stair_Down(-14.3f);
+            log_lift_action("B pressed: stair DOWN auto start, raise_angle=-14.3");
         }
-        else if (x_rising)
+        else if (up_rising)
         {
-            Lift.Set_Control_Type(CHARIOT_LIFT_CONTROL_ENABLE);
-            Lift.Set_Rear_Lift_State(CHARIOT_LIFT_POSITION_RETRACT);
-            Lift.Set_Diff_Drive_Enable(false);
-            log_lift_action("X pressed: rear lift RETRACT, right stick returns to omni yaw");
+            _Start_Lift_Aux_Home_Sequence();
+            log_lift_action("Up pressed: aux 0x07 target=0.227, then lift target=-0.01");
+        }
+        else if (down_rising)
+        {
+            _Start_Lift_Aux_Raise_Sequence();
+            log_lift_action("Down pressed: lift motor target=-39.0, then aux 0x07 target=1.5");
         }
 
         last_lift_button_code_ = snapshot.button_code;
@@ -782,6 +712,18 @@ void Class_Robot::_Lift_Control()
     else
     {
         last_lift_button_code_ = LogF710_Key_IDLE;
+        last_gripper_button_code_ = LogF710_Key_IDLE;
+    }
+
+    _Update_Lift_Aux_Sequence();
+
+    if (Lift.Is_Stair_Auto_Active())
+    {
+        Chassis.Set_Chassis_Control_Type(Chassis_Omni_Control_Type_ENABLE);
+        Chassis.Set_Target_Velocity_X(Lift.Get_Stair_Chassis_Forward());
+        Chassis.Set_Target_Velocity_Y(0.0f);
+        Chassis.Set_Target_Omega(0.0f);
+        return;
     }
 
     if (Lift.Get_Diff_Drive_Enable() && chassis_remote_enabled_ && remote_cmd_recent)
@@ -791,6 +733,54 @@ void Class_Robot::_Lift_Control()
     else
     {
         Lift.Set_Target_Diff_Command(0.0f, 0.0f);
+    }
+}
+
+void Class_Robot::_Gripper_Control(bool buttons_recent, uint16_t button_code)
+{
+    if (!buttons_recent)
+    {
+        last_gripper_button_code_ = LogF710_Key_IDLE;
+        return;
+    }
+
+    const bool grab_rising =
+        (button_code == LogF710_Key_LB_X) &&
+        (last_gripper_button_code_ != LogF710_Key_LB_X);
+    const bool release_rising =
+        (button_code == LogF710_Key_LB_Y) &&
+        (last_gripper_button_code_ != LogF710_Key_LB_Y);
+
+    if (grab_rising)
+    {
+        const bool ok = Gripper.Grab();
+        _Log_Gripper_Action(ok ? "LB+X pressed: gripper GRAB sent (0x01)"
+                               : "LB+X pressed: gripper GRAB send failed (0x01)",
+                            ok);
+    }
+    else if (release_rising)
+    {
+        const bool ok = Gripper.Release();
+        _Log_Gripper_Action(ok ? "LB+Y pressed: gripper RELEASE sent (0x02)"
+                               : "LB+Y pressed: gripper RELEASE send failed (0x02)",
+                            ok);
+    }
+
+    last_gripper_button_code_ = button_code;
+}
+
+void Class_Robot::_Log_Gripper_Action(const char *msg, bool ok)
+{
+    if (bridge_node_)
+    {
+        if (ok)
+            RCLCPP_WARN(bridge_node_->get_logger(), "%s", msg);
+        else
+            RCLCPP_ERROR(bridge_node_->get_logger(), "%s", msg);
+    }
+    else
+    {
+        std::cerr << "[ROBOT][" << (ok ? "WARN" : "ERROR") << "] " << msg << std::endl;
     }
 }
 

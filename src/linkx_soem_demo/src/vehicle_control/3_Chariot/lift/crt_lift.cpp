@@ -1,6 +1,336 @@
 #include "crt_lift.h"
 
 #include <cmath>
+#include <limits>
+
+namespace
+{
+constexpr int kLiftHoldPointCount = 5;
+constexpr float kLiftControlDtS = 0.002f;
+constexpr float kLiftMotorToRodRatio = 3.0f;
+constexpr float kLiftSCurvePeakVelocityScale = 1.875f;
+constexpr uint8_t kLiftToFCanChannel = 2;
+constexpr uint8_t kLiftToFOfflineTicks = 5;  // 5 * 100ms
+constexpr uint16_t kLiftToFInvalidStrength = 65535U;
+constexpr uint16_t kLiftToFTooFarCm = 65532U;
+constexpr uint16_t kStairToFNearCm = 10U;
+constexpr uint16_t kStairToFJumpCm = 5U;
+constexpr float kStairLiftReachedTolerance = 0.10f;
+constexpr float kStairLiftDriveForwardMps = 1.50f;
+constexpr float kStairChassisForwardMps = 1.2f;
+constexpr uint32_t kStairLiftTimeoutTicks = 2500U;     // 5s at 2ms
+constexpr uint32_t kStairSensorTimeoutTicks = 5000U;   // 10s at 2ms
+constexpr uint32_t kStairExtraDriveTicks = 500U;       // 1s at 2ms
+
+struct LiftHoldFeedforwardTable
+{
+    float rod_angle[kLiftHoldPointCount];
+    float motor_torque_nm[kLiftHoldPointCount];
+};
+
+struct LiftToFCanMap
+{
+    uint32_t id;
+    Enum_Chariot_Lift_ToF_Sensor sensor;
+};
+
+enum StairTransition
+{
+    STAIR_TRANSITION_NONE = 0,
+    STAIR_TRANSITION_FRONT_RAISED,
+    STAIR_TRANSITION_REAR_RAISED,
+    STAIR_TRANSITION_BOTH_RAISED,
+    STAIR_TRANSITION_FRONT_RETRACTED,
+    STAIR_TRANSITION_REAR_RETRACTED,
+    STAIR_TRANSITION_BOTH_RETRACTED,
+    STAIR_TRANSITION_TOF_NEAR_OR_JUMP,
+    STAIR_TRANSITION_TOF_JUMP,
+    STAIR_TRANSITION_TIMER,
+};
+
+struct StairStateConfig
+{
+    Enum_Chariot_Lift_Stair_State state;
+    const char *name;
+    bool front_lift_enable;
+    Enum_Chariot_Lift_Position_State front_lift_state;
+    bool rear_lift_enable;
+    Enum_Chariot_Lift_Position_State rear_lift_state;
+    bool front_drive_enable;
+    bool rear_drive_enable;
+    float lift_drive_forward_m_s;
+    float chassis_forward_m_s;
+    StairTransition transition;
+    Enum_Chariot_Lift_ToF_Sensor sensor;
+    Enum_Chariot_Lift_Stair_State next_state;
+    uint32_t timeout_ticks;
+    bool capture_sensor_reference;
+    bool finish_on_transition;
+};
+
+// DM3519 motor-side hold torque feedforward measured by lift_raise_drive_test --suite identify.
+constexpr LiftHoldFeedforwardTable kLiftHoldFeedforward[CHARIOT_LIFT_MODULE_NUM] = {
+    {
+        {-15.0f, -11.5f, -8.0f, -4.5f, -1.0f},
+        {-1.0905f, -0.5794f, -0.5545f, -0.6979f, 0.3695f},
+    },
+    {
+        {-15.0f, -11.5f, -8.0f, -4.5f, -1.0f},
+        {-0.9960f, -0.6412f, -0.5545f, -0.5803f, 0.4385f},
+    },
+};
+
+constexpr LiftToFCanMap kLiftToFCanMap[CHARIOT_LIFT_TOF_NUM] = {
+    {0x001U, CHARIOT_LIFT_TOF_UP_FRONT},
+    {0x002U, CHARIOT_LIFT_TOF_UP_BACK},
+    {0x003U, CHARIOT_LIFT_TOF_DOWN_FRONT},
+    {0x004U, CHARIOT_LIFT_TOF_DOWN_BACK},
+};
+
+constexpr StairStateConfig kStairStateConfigs[] = {
+    {
+        CHARIOT_LIFT_STAIR_UP_RAISE_ALL,
+        "UP_RAISE_ALL",
+        true, CHARIOT_LIFT_POSITION_RAISE,
+        true, CHARIOT_LIFT_POSITION_RAISE,
+        false, false, 0.0f, 0.0f,
+        STAIR_TRANSITION_BOTH_RAISED,
+        CHARIOT_LIFT_TOF_UP_FRONT,
+        CHARIOT_LIFT_STAIR_UP_DRIVE_ALL_WAIT_UP_FRONT,
+        kStairLiftTimeoutTicks,
+        false,
+        false,
+    },
+    {
+        CHARIOT_LIFT_STAIR_UP_DRIVE_ALL_WAIT_UP_FRONT,
+        "UP_DRIVE_ALL_WAIT_UP_FRONT",
+        true, CHARIOT_LIFT_POSITION_RAISE,
+        true, CHARIOT_LIFT_POSITION_RAISE,
+        true, true, kStairLiftDriveForwardMps, 0.0f,
+        STAIR_TRANSITION_TOF_NEAR_OR_JUMP,
+        CHARIOT_LIFT_TOF_UP_FRONT,
+        CHARIOT_LIFT_STAIR_UP_RETRACT_FRONT,
+        kStairSensorTimeoutTicks,
+        true,
+        false,
+    },
+    {
+        CHARIOT_LIFT_STAIR_UP_RETRACT_FRONT,
+        "UP_RETRACT_FRONT",
+        true, CHARIOT_LIFT_POSITION_RETRACT,
+        true, CHARIOT_LIFT_POSITION_RAISE,
+        false, false, 0.0f, 0.0f,
+        STAIR_TRANSITION_FRONT_RETRACTED,
+        CHARIOT_LIFT_TOF_UP_FRONT,
+        CHARIOT_LIFT_STAIR_UP_REAR_DRIVE_WAIT_DOWN_FRONT,
+        kStairLiftTimeoutTicks,
+        false,
+        false,
+    },
+    {
+        CHARIOT_LIFT_STAIR_UP_REAR_DRIVE_WAIT_DOWN_FRONT,
+        "UP_REAR_DRIVE_WAIT_DOWN_FRONT",
+        true, CHARIOT_LIFT_POSITION_RETRACT,
+        true, CHARIOT_LIFT_POSITION_RAISE,
+        false, true, kStairLiftDriveForwardMps, kStairChassisForwardMps,
+        STAIR_TRANSITION_TOF_NEAR_OR_JUMP,
+        CHARIOT_LIFT_TOF_DOWN_FRONT,
+        CHARIOT_LIFT_STAIR_UP_RETRACT_REAR,
+        kStairSensorTimeoutTicks,
+        true,
+        false,
+    },
+    {
+        CHARIOT_LIFT_STAIR_UP_RETRACT_REAR,
+        "UP_RETRACT_REAR",
+        true, CHARIOT_LIFT_POSITION_RETRACT,
+        true, CHARIOT_LIFT_POSITION_RETRACT,
+        false, false, 0.0f, 0.0f,
+        STAIR_TRANSITION_REAR_RETRACTED,
+        CHARIOT_LIFT_TOF_DOWN_FRONT,
+        CHARIOT_LIFT_STAIR_UP_CHASSIS_WAIT_DOWN_BACK,
+        kStairLiftTimeoutTicks,
+        false,
+        false,
+    },
+    {
+        CHARIOT_LIFT_STAIR_UP_CHASSIS_WAIT_DOWN_BACK,
+        "UP_CHASSIS_WAIT_DOWN_BACK",
+        true, CHARIOT_LIFT_POSITION_RETRACT,
+        true, CHARIOT_LIFT_POSITION_RETRACT,
+        false, false, 0.0f, kStairChassisForwardMps,
+        STAIR_TRANSITION_TOF_NEAR_OR_JUMP,
+        CHARIOT_LIFT_TOF_DOWN_BACK,
+        CHARIOT_LIFT_STAIR_IDLE,
+        kStairSensorTimeoutTicks,
+        true,
+        true,
+    },
+    {
+        CHARIOT_LIFT_STAIR_DOWN_CHASSIS_WAIT_UP_BACK,
+        "DOWN_CHASSIS_WAIT_UP_BACK",
+        true, CHARIOT_LIFT_POSITION_RETRACT,
+        true, CHARIOT_LIFT_POSITION_RETRACT,
+        false, false, 0.0f, kStairChassisForwardMps,
+        STAIR_TRANSITION_TOF_JUMP,
+        CHARIOT_LIFT_TOF_UP_BACK,
+        CHARIOT_LIFT_STAIR_DOWN_RAISE_FRONT,
+        kStairSensorTimeoutTicks,
+        true,
+        false,
+    },
+    {
+        CHARIOT_LIFT_STAIR_DOWN_RAISE_FRONT,
+        "DOWN_RAISE_FRONT",
+        true, CHARIOT_LIFT_POSITION_RAISE,
+        true, CHARIOT_LIFT_POSITION_RETRACT,
+        false, false, 0.0f, 0.0f,
+        STAIR_TRANSITION_FRONT_RAISED,
+        CHARIOT_LIFT_TOF_UP_BACK,
+        CHARIOT_LIFT_STAIR_DOWN_FRONT_DRIVE_WAIT_DOWN_BACK,
+        kStairLiftTimeoutTicks,
+        false,
+        false,
+    },
+    {
+        CHARIOT_LIFT_STAIR_DOWN_FRONT_DRIVE_WAIT_DOWN_BACK,
+        "DOWN_FRONT_DRIVE_WAIT_DOWN_BACK",
+        true, CHARIOT_LIFT_POSITION_RAISE,
+        true, CHARIOT_LIFT_POSITION_RETRACT,
+        true, false, kStairLiftDriveForwardMps, kStairChassisForwardMps,
+        STAIR_TRANSITION_TOF_JUMP,
+        CHARIOT_LIFT_TOF_DOWN_BACK,
+        CHARIOT_LIFT_STAIR_DOWN_RAISE_REAR,
+        kStairSensorTimeoutTicks,
+        true,
+        false,
+    },
+    {
+        CHARIOT_LIFT_STAIR_DOWN_RAISE_REAR,
+        "DOWN_RAISE_REAR",
+        true, CHARIOT_LIFT_POSITION_RAISE,
+        true, CHARIOT_LIFT_POSITION_RAISE,
+        false, false, 0.0f, 0.0f,
+        STAIR_TRANSITION_REAR_RAISED,
+        CHARIOT_LIFT_TOF_DOWN_BACK,
+        CHARIOT_LIFT_STAIR_DOWN_DRIVE_ALL_EXTRA,
+        kStairLiftTimeoutTicks,
+        false,
+        false,
+    },
+    {
+        CHARIOT_LIFT_STAIR_DOWN_DRIVE_ALL_EXTRA,
+        "DOWN_DRIVE_ALL_EXTRA",
+        true, CHARIOT_LIFT_POSITION_RAISE,
+        true, CHARIOT_LIFT_POSITION_RAISE,
+        true, true, kStairLiftDriveForwardMps, 0.0f,
+        STAIR_TRANSITION_TIMER,
+        CHARIOT_LIFT_TOF_DOWN_BACK,
+        CHARIOT_LIFT_STAIR_DOWN_RETRACT_ALL,
+        kStairExtraDriveTicks,
+        false,
+        false,
+    },
+    {
+        CHARIOT_LIFT_STAIR_DOWN_RETRACT_ALL,
+        "DOWN_RETRACT_ALL",
+        true, CHARIOT_LIFT_POSITION_RETRACT,
+        true, CHARIOT_LIFT_POSITION_RETRACT,
+        false, false, 0.0f, 0.0f,
+        STAIR_TRANSITION_BOTH_RETRACTED,
+        CHARIOT_LIFT_TOF_DOWN_BACK,
+        CHARIOT_LIFT_STAIR_IDLE,
+        kStairLiftTimeoutTicks,
+        false,
+        true,
+    },
+    {
+        CHARIOT_LIFT_STAIR_ABORT,
+        "ABORT",
+        false, CHARIOT_LIFT_POSITION_RETRACT,
+        false, CHARIOT_LIFT_POSITION_RETRACT,
+        false, false, 0.0f, 0.0f,
+        STAIR_TRANSITION_NONE,
+        CHARIOT_LIFT_TOF_UP_FRONT,
+        CHARIOT_LIFT_STAIR_ABORT,
+        0U,
+        false,
+        false,
+    },
+};
+
+const StairStateConfig *Find_Stair_State_Config(Enum_Chariot_Lift_Stair_State state)
+{
+    for (const auto &config : kStairStateConfigs)
+    {
+        if (config.state == state)
+            return &config;
+    }
+    return nullptr;
+}
+
+bool Match_Lift_ToF_Sensor(uint32_t can_id_std, Enum_Chariot_Lift_ToF_Sensor &sensor)
+{
+    for (const auto &item : kLiftToFCanMap)
+    {
+        if (item.id == can_id_std)
+        {
+            sensor = item.sensor;
+            return true;
+        }
+    }
+    return false;
+}
+
+float Interpolate_Lift_Hold_Torque(Enum_Chariot_Lift_Module module, float rod_angle)
+{
+    const LiftHoldFeedforwardTable &table = kLiftHoldFeedforward[static_cast<int>(module)];
+
+    if (rod_angle <= table.rod_angle[0])
+        return table.motor_torque_nm[0];
+    if (rod_angle >= table.rod_angle[kLiftHoldPointCount - 1])
+        return table.motor_torque_nm[kLiftHoldPointCount - 1];
+
+    for (int i = 1; i < kLiftHoldPointCount; ++i)
+    {
+        if (rod_angle <= table.rod_angle[i])
+        {
+            const float span = table.rod_angle[i] - table.rod_angle[i - 1];
+            const float ratio = (fabsf(span) > 1e-5f) ?
+                (rod_angle - table.rod_angle[i - 1]) / span :
+                0.0f;
+            return table.motor_torque_nm[i - 1] +
+                   ratio * (table.motor_torque_nm[i] - table.motor_torque_nm[i - 1]);
+        }
+    }
+
+    return table.motor_torque_nm[kLiftHoldPointCount - 1];
+}
+
+float SCurve_Fraction(float u)
+{
+    if (u < 0.0f)
+        u = 0.0f;
+    if (u > 1.0f)
+        u = 1.0f;
+
+    return (10.0f * u * u * u) -
+           (15.0f * u * u * u * u) +
+           (6.0f * u * u * u * u * u);
+}
+
+float SCurve_Fraction_Derivative(float u)
+{
+    if (u < 0.0f)
+        u = 0.0f;
+    if (u > 1.0f)
+        u = 1.0f;
+
+    return (30.0f * u * u) -
+           (60.0f * u * u * u) +
+           (30.0f * u * u * u * u);
+}
+}  // namespace
 
 /**
  * @brief 初始化车头和车尾两个抬升模块，并绑定 LinkX CAN 通道。
@@ -29,6 +359,14 @@ void Class_Chariot_Lift::Init(linkx_t *__LinkX_Handler)
         Motor_Drive_Right[i].Set_Force_Output_Without_Feedback(false);
         Motor_Lift[i].Set_Force_Output_Without_Feedback(false);
     }
+
+    for (int i = 0; i < CHARIOT_LIFT_TOF_NUM; ++i)
+    {
+        ToF_Data[i] = ChariotLiftToFData{};
+        ToF_Rx_Index[i] = 0;
+        ToF_Pre_Frame_Count[i] = 0;
+        ToF_Offline_Ticks[i] = kLiftToFOfflineTicks;
+    }
 }
 
 /**
@@ -46,7 +384,7 @@ void Class_Chariot_Lift::Init_Motor_Params()
         .wheel_kd               = 1.2f,
         .wheel_deadzone         = 0.05f,
         .left_direction         = 1.0f,
-        .right_direction        = 1.0f,
+        .right_direction        = -1.0f,
         .left_speed_correction  = 1.0f,
         .right_speed_correction = 1.0f,
         .accel_limit            = 300.0f,
@@ -63,7 +401,7 @@ void Class_Chariot_Lift::Init_Motor_Params()
         .wheel_kd               = 1.2f,
         .wheel_deadzone         = 0.05f,
         .left_direction         = 1.0f,
-        .right_direction        = 1.0f,
+        .right_direction        = -1.0f,
         .left_speed_correction  = 1.0f,
         .right_speed_correction = 1.0f,
         .accel_limit            = 300.0f,
@@ -71,34 +409,42 @@ void Class_Chariot_Lift::Init_Motor_Params()
     };
 
     Lift_Params[CHARIOT_LIFT_MODULE_FRONT] = {
-        .retract_angle = 0.0f,
-        .raise_angle   = -20.0f,
-        .max_speed     = 5.0f,
-        .kp            = 15.0f,
-        .kd            = 1.0f,
+        .retract_angle = -0.1f,
+        .raise_angle   = -8.0f,
+        .max_speed     = 13.0f,
+        .kp            = 20.0f,
+        .kd            = 1.2f,
     };
 
     Lift_Params[CHARIOT_LIFT_MODULE_REAR] = {
-        .retract_angle = 0.0f,
-        .raise_angle   = -20.0f,
-        .max_speed     = 5.0f,
-        .kp            = 15.0f,
-        .kd            = 1.0f,
+        .retract_angle = -0.1f,
+        .raise_angle   = -8.0f,
+        .max_speed     = 13.0f,
+        .kp            = 20.0f,
+        .kd            = 1.2f,
     };
 
     Smooth_Lift_Angle[CHARIOT_LIFT_MODULE_FRONT] =
         Lift_Params[CHARIOT_LIFT_MODULE_FRONT].retract_angle;
     Smooth_Lift_Angle[CHARIOT_LIFT_MODULE_REAR] =
         Lift_Params[CHARIOT_LIFT_MODULE_REAR].retract_angle;
+
+    Reset_Lift_Profile(CHARIOT_LIFT_MODULE_FRONT,
+                       Smooth_Lift_Angle[CHARIOT_LIFT_MODULE_FRONT]);
+    Reset_Lift_Profile(CHARIOT_LIFT_MODULE_REAR,
+                       Smooth_Lift_Angle[CHARIOT_LIFT_MODULE_REAR]);
 }
 
 /**
  * @brief 将收到的一帧 CAN 报文路由到对应模块内匹配的电机。
  */
-bool Class_Chariot_Lift::CAN_Rx_Callback(uint8_t CAN_Channel, uint32_t CAN_ID, uint8_t *CAN_Data)
+bool Class_Chariot_Lift::CAN_Rx_Callback(uint8_t CAN_Channel, uint32_t CAN_ID, uint8_t *CAN_Data, uint8_t CAN_Dlen)
 {
     const uint32_t can_id_std = CAN_ID & 0x7FFU;
     Enum_Chariot_Lift_Module module;
+
+    if (CAN_Rx_ToF(CAN_Channel, can_id_std, CAN_Data, CAN_Dlen))
+        return true;
 
     /* 新车头为原车尾：CAN0=车头抬升模块，CAN1=车尾抬升模块 */
     if (CAN_Channel == 0U)
@@ -133,6 +479,87 @@ bool Class_Chariot_Lift::CAN_Rx_Callback(uint8_t CAN_Channel, uint32_t CAN_ID, u
     return false;
 }
 
+bool Class_Chariot_Lift::CAN_Rx_ToF(uint8_t CAN_Channel,
+                                    uint32_t CAN_ID,
+                                    const uint8_t *CAN_Data,
+                                    uint8_t CAN_Dlen)
+{
+    if (CAN_Channel != kLiftToFCanChannel || CAN_Data == nullptr || CAN_Dlen == 0)
+        return false;
+
+    Enum_Chariot_Lift_ToF_Sensor sensor = CHARIOT_LIFT_TOF_UP_FRONT;
+    if (!Match_Lift_ToF_Sensor(CAN_ID, sensor))
+        return false;
+
+    const uint8_t n = (CAN_Dlen > 64U) ? 64U : CAN_Dlen;
+    for (uint8_t i = 0; i < n; ++i)
+        Parse_ToF_Byte(sensor, CAN_Data[i]);
+
+    return true;
+}
+
+void Class_Chariot_Lift::Parse_ToF_Byte(Enum_Chariot_Lift_ToF_Sensor sensor, uint8_t byte)
+{
+    const int idx = static_cast<int>(sensor);
+    uint8_t &rx_index = ToF_Rx_Index[idx];
+    uint8_t *rx_buffer = ToF_Rx_Buffer[idx];
+
+    if (rx_index == 0U)
+    {
+        if (byte == 0x59U)
+        {
+            rx_buffer[0] = byte;
+            rx_index = 1U;
+        }
+        return;
+    }
+
+    if (rx_index == 1U && byte != 0x59U)
+    {
+        rx_index = 0U;
+        return;
+    }
+
+    rx_buffer[rx_index++] = byte;
+    if (rx_index < 9U)
+        return;
+
+    rx_index = 0U;
+
+    uint16_t checksum = 0;
+    for (int i = 0; i < 8; ++i)
+        checksum = static_cast<uint16_t>(checksum + rx_buffer[i]);
+
+    if (static_cast<uint8_t>(checksum & 0xFFU) != rx_buffer[8])
+        return;
+
+    ChariotLiftToFData &tof = ToF_Data[idx];
+    tof.distance_cm = static_cast<uint16_t>((rx_buffer[3] << 8) | rx_buffer[2]);
+    tof.strength = static_cast<uint16_t>((rx_buffer[5] << 8) | rx_buffer[4]);
+    tof.temperature_raw = static_cast<uint16_t>((rx_buffer[7] << 8) | rx_buffer[6]);
+    tof.valid = (tof.strength >= 100U && tof.strength != kLiftToFInvalidStrength);
+    tof.frame_count++;
+    tof.online = true;
+    ToF_Offline_Ticks[idx] = 0;
+
+    if (tof.distance_cm == 0U)
+    {
+        tof.range_m = -std::numeric_limits<float>::infinity();
+    }
+    else if (tof.distance_cm == kLiftToFTooFarCm)
+    {
+        tof.range_m = std::numeric_limits<float>::infinity();
+    }
+    else if (!tof.valid)
+    {
+        tof.range_m = std::numeric_limits<float>::quiet_NaN();
+    }
+    else
+    {
+        tof.range_m = static_cast<float>(tof.distance_cm) * 0.01f;
+    }
+}
+
 /**
  * @brief 刷新电机在线状态，并在抬升控制启用时保持电机使能。
  */
@@ -143,6 +570,27 @@ void Class_Chariot_Lift::TIM_100ms_Alive_PeriodElapsedCallback()
         Motor_Drive_Left[i].TIM_Alive_PeriodElapsedCallback();
         Motor_Drive_Right[i].TIM_Alive_PeriodElapsedCallback();
         Motor_Lift[i].TIM_Alive_PeriodElapsedCallback();
+    }
+
+    for (int i = 0; i < CHARIOT_LIFT_TOF_NUM; ++i)
+    {
+        if (ToF_Data[i].frame_count != ToF_Pre_Frame_Count[i])
+        {
+            ToF_Data[i].online = true;
+            ToF_Offline_Ticks[i] = 0;
+        }
+        else if (ToF_Offline_Ticks[i] < kLiftToFOfflineTicks)
+        {
+            ++ToF_Offline_Ticks[i];
+            if (ToF_Offline_Ticks[i] >= kLiftToFOfflineTicks)
+                ToF_Data[i].online = false;
+        }
+        else
+        {
+            ToF_Data[i].online = false;
+        }
+
+        ToF_Pre_Frame_Count[i] = ToF_Data[i].frame_count;
     }
 
     if (Control_Type == CHARIOT_LIFT_CONTROL_ENABLE)
@@ -160,6 +608,7 @@ void Class_Chariot_Lift::TIM_2ms_Control_PeriodElapsedCallback()
     {
         case CHARIOT_LIFT_CONTROL_DISABLE:
         {
+            Stop_Stair_Auto();
             Disable_All_Motors(control_disable_exit_burst_ticks_ > 0);
             if (control_disable_exit_burst_ticks_ > 0)
                 --control_disable_exit_burst_ticks_;
@@ -170,6 +619,7 @@ void Class_Chariot_Lift::TIM_2ms_Control_PeriodElapsedCallback()
         case CHARIOT_LIFT_CONTROL_ENABLE:
         {
             Ensure_All_Motors_Enabled();
+            Update_Stair_Auto();
 
             for (int i = 0; i < CHARIOT_LIFT_MODULE_NUM; ++i)
             {
@@ -259,6 +709,372 @@ void Class_Chariot_Lift::Send_Enable_Burst()
     }
 }
 
+void Class_Chariot_Lift::Start_Stair_Up(float raise_angle)
+{
+    Set_Control_Type(CHARIOT_LIFT_CONTROL_ENABLE);
+    Lift_Params[CHARIOT_LIFT_MODULE_FRONT].raise_angle = raise_angle;
+    Lift_Params[CHARIOT_LIFT_MODULE_REAR].raise_angle = raise_angle;
+    Stair_Raise_Angle = raise_angle;
+    Enter_Stair_State(CHARIOT_LIFT_STAIR_UP_RAISE_ALL);
+}
+
+void Class_Chariot_Lift::Start_Stair_Down(float raise_angle)
+{
+    Set_Control_Type(CHARIOT_LIFT_CONTROL_ENABLE);
+    Lift_Params[CHARIOT_LIFT_MODULE_FRONT].raise_angle = raise_angle;
+    Lift_Params[CHARIOT_LIFT_MODULE_REAR].raise_angle = raise_angle;
+    Stair_Raise_Angle = raise_angle;
+    Enter_Stair_State(CHARIOT_LIFT_STAIR_DOWN_CHASSIS_WAIT_UP_BACK);
+}
+
+void Class_Chariot_Lift::Stop_Stair_Auto()
+{
+    Stair_State = CHARIOT_LIFT_STAIR_IDLE;
+    Stair_State_Ticks = 0;
+    Stair_Chassis_Forward = 0.0f;
+    Set_Stair_Drive_Command(false, false, 0.0f);
+}
+
+void Class_Chariot_Lift::Set_Both_Lift_Raise(float raise_angle)
+{
+    Stop_Stair_Auto();
+    Set_Control_Type(CHARIOT_LIFT_CONTROL_ENABLE);
+    Set_Raise_Angle(raise_angle);
+    Set_Stair_Lift_Command(true, CHARIOT_LIFT_POSITION_RAISE,
+                           true, CHARIOT_LIFT_POSITION_RAISE);
+}
+
+void Class_Chariot_Lift::Set_Both_Lift_Raise_By_Motor_Angle(float lift_motor_angle)
+{
+    Set_Both_Lift_Raise(Motor_To_Lift_Rod_Angle(lift_motor_angle));
+}
+
+void Class_Chariot_Lift::Set_Both_Lift_Retract()
+{
+    Stop_Stair_Auto();
+    Set_Control_Type(CHARIOT_LIFT_CONTROL_ENABLE);
+    Set_Stair_Lift_Command(true, CHARIOT_LIFT_POSITION_RETRACT,
+                           true, CHARIOT_LIFT_POSITION_RETRACT);
+}
+
+void Class_Chariot_Lift::Set_Both_Lift_Retract_To(float retract_angle)
+{
+    Lift_Params[CHARIOT_LIFT_MODULE_FRONT].retract_angle = retract_angle;
+    Lift_Params[CHARIOT_LIFT_MODULE_REAR].retract_angle = retract_angle;
+    Set_Both_Lift_Retract();
+}
+
+bool Class_Chariot_Lift::Are_Both_Lifts_Reached(Enum_Chariot_Lift_Position_State state)
+{
+    return Is_Lift_Profile_Reached(CHARIOT_LIFT_MODULE_FRONT, state) &&
+           Is_Lift_Profile_Reached(CHARIOT_LIFT_MODULE_REAR, state) &&
+           Is_Lift_Feedback_Reached(CHARIOT_LIFT_MODULE_FRONT, state) &&
+           Is_Lift_Feedback_Reached(CHARIOT_LIFT_MODULE_REAR, state);
+}
+
+void Class_Chariot_Lift::Update_Stair_Auto()
+{
+    if (Stair_State == CHARIOT_LIFT_STAIR_IDLE)
+        return;
+
+    if (Stair_State == CHARIOT_LIFT_STAIR_ABORT)
+    {
+        Stair_Chassis_Forward = 0.0f;
+        Set_Stair_Drive_Command(false, false, 0.0f);
+        return;
+    }
+
+    ++Stair_State_Ticks;
+
+    const StairStateConfig *config = Find_Stair_State_Config(Stair_State);
+    if (config == nullptr)
+    {
+        Enter_Stair_State(CHARIOT_LIFT_STAIR_ABORT);
+        return;
+    }
+
+    Set_Stair_Lift_Command(config->front_lift_enable,
+                           config->front_lift_state,
+                           config->rear_lift_enable,
+                           config->rear_lift_state);
+    Set_Stair_Drive_Command(config->front_drive_enable,
+                            config->rear_drive_enable,
+                            config->lift_drive_forward_m_s);
+    Stair_Chassis_Forward = config->chassis_forward_m_s;
+
+    bool transition_ready = false;
+    switch (config->transition)
+    {
+        case STAIR_TRANSITION_FRONT_RAISED:
+            transition_ready = Is_Lift_Profile_Reached(CHARIOT_LIFT_MODULE_FRONT,
+                                                       CHARIOT_LIFT_POSITION_RAISE);
+            break;
+        case STAIR_TRANSITION_REAR_RAISED:
+            transition_ready = Is_Lift_Profile_Reached(CHARIOT_LIFT_MODULE_REAR,
+                                                       CHARIOT_LIFT_POSITION_RAISE);
+            break;
+        case STAIR_TRANSITION_BOTH_RAISED:
+            transition_ready =
+                Is_Lift_Profile_Reached(CHARIOT_LIFT_MODULE_FRONT, CHARIOT_LIFT_POSITION_RAISE) &&
+                Is_Lift_Profile_Reached(CHARIOT_LIFT_MODULE_REAR, CHARIOT_LIFT_POSITION_RAISE);
+            break;
+        case STAIR_TRANSITION_FRONT_RETRACTED:
+            transition_ready = Is_Lift_Profile_Reached(CHARIOT_LIFT_MODULE_FRONT,
+                                                       CHARIOT_LIFT_POSITION_RETRACT);
+            break;
+        case STAIR_TRANSITION_REAR_RETRACTED:
+            transition_ready = Is_Lift_Profile_Reached(CHARIOT_LIFT_MODULE_REAR,
+                                                       CHARIOT_LIFT_POSITION_RETRACT);
+            break;
+        case STAIR_TRANSITION_BOTH_RETRACTED:
+            transition_ready =
+                Is_Lift_Profile_Reached(CHARIOT_LIFT_MODULE_FRONT, CHARIOT_LIFT_POSITION_RETRACT) &&
+                Is_Lift_Profile_Reached(CHARIOT_LIFT_MODULE_REAR, CHARIOT_LIFT_POSITION_RETRACT);
+            break;
+        case STAIR_TRANSITION_TOF_NEAR_OR_JUMP:
+            transition_ready = Is_Stair_ToF_Near(config->sensor) ||
+                               Is_Stair_ToF_Jumped(config->sensor);
+            break;
+        case STAIR_TRANSITION_TOF_JUMP:
+            transition_ready = Is_Stair_ToF_Jumped(config->sensor);
+            break;
+        case STAIR_TRANSITION_TIMER:
+            transition_ready = Is_Stair_State_Timed_Out(config->timeout_ticks);
+            break;
+        case STAIR_TRANSITION_NONE:
+        default:
+            transition_ready = false;
+            break;
+    }
+
+    if (transition_ready)
+    {
+        if (config->finish_on_transition)
+            Finish_Stair_Auto(true);
+        else
+            Enter_Stair_State(config->next_state);
+        return;
+    }
+
+    if (config->transition != STAIR_TRANSITION_TIMER &&
+        config->timeout_ticks > 0U &&
+        Is_Stair_State_Timed_Out(config->timeout_ticks))
+    {
+        Enter_Stair_State(CHARIOT_LIFT_STAIR_ABORT);
+    }
+}
+
+void Class_Chariot_Lift::Enter_Stair_State(Enum_Chariot_Lift_Stair_State state)
+{
+    Stair_State = state;
+    Stair_State_Ticks = 0;
+    Stair_Chassis_Forward = 0.0f;
+    Set_Stair_Drive_Command(false, false, 0.0f);
+
+    for (int i = 0; i < CHARIOT_LIFT_TOF_NUM; ++i)
+        Stair_ToF_Reference_Valid[i] = false;
+
+    const StairStateConfig *config = Find_Stair_State_Config(state);
+    if (config != nullptr && config->capture_sensor_reference)
+        Capture_Stair_ToF_Reference(config->sensor);
+    if (state == CHARIOT_LIFT_STAIR_ABORT)
+        Set_Stair_Drive_Command(false, false, 0.0f);
+}
+
+const char *Class_Chariot_Lift::Get_Stair_State_Name()
+{
+    if (Stair_State == CHARIOT_LIFT_STAIR_IDLE)
+        return "IDLE";
+
+    const StairStateConfig *config = Find_Stair_State_Config(Stair_State);
+    return (config != nullptr) ? config->name : "UNKNOWN";
+}
+
+void Class_Chariot_Lift::Finish_Stair_Auto(bool retract_lift)
+{
+    Stair_State = CHARIOT_LIFT_STAIR_IDLE;
+    Stair_State_Ticks = 0;
+    Stair_Chassis_Forward = 0.0f;
+    Set_Stair_Drive_Command(false, false, 0.0f);
+    if (retract_lift)
+    {
+        Set_Stair_Lift_Command(true, CHARIOT_LIFT_POSITION_RETRACT,
+                               true, CHARIOT_LIFT_POSITION_RETRACT);
+    }
+}
+
+void Class_Chariot_Lift::Set_Stair_Lift_Command(bool front_enable,
+                                                Enum_Chariot_Lift_Position_State front_state,
+                                                bool rear_enable,
+                                                Enum_Chariot_Lift_Position_State rear_state)
+{
+    Lift_Module_Enable[CHARIOT_LIFT_MODULE_FRONT] = front_enable;
+    Lift_Module_Enable[CHARIOT_LIFT_MODULE_REAR] = rear_enable;
+    Lift_State[CHARIOT_LIFT_MODULE_FRONT] = front_state;
+    Lift_State[CHARIOT_LIFT_MODULE_REAR] = rear_state;
+}
+
+void Class_Chariot_Lift::Set_Stair_Drive_Command(bool front_enable,
+                                                 bool rear_enable,
+                                                 float forward_m_s)
+{
+    Stair_Drive_Module_Enable[CHARIOT_LIFT_MODULE_FRONT] = front_enable;
+    Stair_Drive_Module_Enable[CHARIOT_LIFT_MODULE_REAR] = rear_enable;
+
+    const bool enable = front_enable || rear_enable;
+    if (Diff_Drive_Enable && !enable)
+        drive_disable_exit_burst_ticks_ = 50;
+
+    Diff_Drive_Enable = enable;
+    Target_Diff_Forward = enable ? forward_m_s : 0.0f;
+    Target_Diff_Yaw = 0.0f;
+}
+
+void Class_Chariot_Lift::Capture_Stair_ToF_Reference(Enum_Chariot_Lift_ToF_Sensor sensor)
+{
+    const int idx = static_cast<int>(sensor);
+    Stair_ToF_Reference_Valid[idx] = false;
+    if (Is_Stair_ToF_Usable(sensor))
+    {
+        Stair_ToF_Reference_Cm[idx] = ToF_Data[idx].distance_cm;
+        Stair_ToF_Reference_Valid[idx] = true;
+    }
+}
+
+bool Class_Chariot_Lift::Is_Stair_ToF_Usable(Enum_Chariot_Lift_ToF_Sensor sensor)
+{
+    const ChariotLiftToFData &tof = ToF_Data[static_cast<int>(sensor)];
+    return tof.online &&
+           tof.valid &&
+           tof.distance_cm > 0U &&
+           tof.distance_cm != kLiftToFTooFarCm &&
+           std::isfinite(tof.range_m);
+}
+
+bool Class_Chariot_Lift::Is_Stair_ToF_Near(Enum_Chariot_Lift_ToF_Sensor sensor)
+{
+    const ChariotLiftToFData &tof = ToF_Data[static_cast<int>(sensor)];
+    return tof.online &&
+           tof.valid &&
+           tof.distance_cm != kLiftToFTooFarCm &&
+           tof.distance_cm <= kStairToFNearCm;
+}
+
+bool Class_Chariot_Lift::Is_Stair_ToF_Jumped(Enum_Chariot_Lift_ToF_Sensor sensor)
+{
+    if (!Is_Stair_ToF_Usable(sensor))
+        return false;
+
+    const int idx = static_cast<int>(sensor);
+    const uint16_t distance_cm = ToF_Data[idx].distance_cm;
+    if (!Stair_ToF_Reference_Valid[idx])
+    {
+        Stair_ToF_Reference_Cm[idx] = distance_cm;
+        Stair_ToF_Reference_Valid[idx] = true;
+        return false;
+    }
+
+    const int delta_cm = static_cast<int>(distance_cm) -
+                         static_cast<int>(Stair_ToF_Reference_Cm[idx]);
+    return std::abs(delta_cm) >= static_cast<int>(kStairToFJumpCm);
+}
+
+bool Class_Chariot_Lift::Is_Lift_Profile_Reached(Enum_Chariot_Lift_Module module,
+                                                 Enum_Chariot_Lift_Position_State state)
+{
+    const float target = (state == CHARIOT_LIFT_POSITION_RAISE) ?
+        Stair_Raise_Angle :
+        Lift_Params[module].retract_angle;
+
+    return !Lift_Profile_Active[module] &&
+           fabsf(Smooth_Lift_Angle[module] - target) <= kStairLiftReachedTolerance;
+}
+
+bool Class_Chariot_Lift::Is_Lift_Feedback_Reached(Enum_Chariot_Lift_Module module,
+                                                  Enum_Chariot_Lift_Position_State state)
+{
+    if (Motor_Lift[module].Get_Status() != Motor_DM_Status_ENABLE)
+        return false;
+
+    const float target = (state == CHARIOT_LIFT_POSITION_RAISE) ?
+        Stair_Raise_Angle :
+        Lift_Params[module].retract_angle;
+    const float lift_rod_angle = Motor_To_Lift_Rod_Angle(Motor_Lift[module].Get_Now_Radian());
+    return fabsf(lift_rod_angle - target) <= kStairLiftReachedTolerance;
+}
+
+bool Class_Chariot_Lift::Is_Stair_State_Timed_Out(uint32_t timeout_ticks)
+{
+    return Stair_State_Ticks >= timeout_ticks;
+}
+
+void Class_Chariot_Lift::Reset_Lift_Profile(Enum_Chariot_Lift_Module module,
+                                            float lift_rod_angle)
+{
+    Smooth_Lift_Angle[module] = lift_rod_angle;
+    Lift_Profile_Start_Angle[module] = lift_rod_angle;
+    Lift_Profile_Target_Angle[module] = lift_rod_angle;
+    Lift_Profile_Elapsed[module] = 0.0f;
+    Lift_Profile_Duration[module] = 0.0f;
+    Target_Lift_Rod_Omega[module] = 0.0f;
+    Lift_Profile_Active[module] = false;
+}
+
+void Class_Chariot_Lift::Start_Lift_Profile(Enum_Chariot_Lift_Module module,
+                                            float target_lift_rod_angle)
+{
+    const ChariotLiftPositionParams &params = Lift_Params[module];
+    const float start_angle = Smooth_Lift_Angle[module];
+    const float distance = target_lift_rod_angle - start_angle;
+    const float safe_peak_speed = fmaxf(0.1f, params.max_speed);
+
+    Lift_Profile_Start_Angle[module] = start_angle;
+    Lift_Profile_Target_Angle[module] = target_lift_rod_angle;
+    Lift_Profile_Elapsed[module] = 0.0f;
+    Lift_Profile_Duration[module] =
+        kLiftSCurvePeakVelocityScale * fabsf(distance) / safe_peak_speed;
+    Target_Lift_Rod_Omega[module] = 0.0f;
+    Lift_Profile_Active[module] = Lift_Profile_Duration[module] > 1e-4f;
+
+    if (!Lift_Profile_Active[module])
+        Reset_Lift_Profile(module, target_lift_rod_angle);
+}
+
+float Class_Chariot_Lift::Update_Lift_Profile(Enum_Chariot_Lift_Module module,
+                                              float target_lift_rod_angle)
+{
+    if (fabsf(target_lift_rod_angle - Lift_Profile_Target_Angle[module]) > 1e-4f)
+        Start_Lift_Profile(module, target_lift_rod_angle);
+
+    if (!Lift_Profile_Active[module])
+    {
+        Smooth_Lift_Angle[module] = target_lift_rod_angle;
+        Target_Lift_Rod_Omega[module] = 0.0f;
+        return Target_Lift_Rod_Omega[module];
+    }
+
+    Lift_Profile_Elapsed[module] += kLiftControlDtS;
+    const float u = (Lift_Profile_Duration[module] > 1e-5f) ?
+        (Lift_Profile_Elapsed[module] / Lift_Profile_Duration[module]) :
+        1.0f;
+
+    if (u >= 1.0f)
+    {
+        Smooth_Lift_Angle[module] = Lift_Profile_Target_Angle[module];
+        Target_Lift_Rod_Omega[module] = 0.0f;
+        Lift_Profile_Active[module] = false;
+        return Target_Lift_Rod_Omega[module];
+    }
+
+    const float distance =
+        Lift_Profile_Target_Angle[module] - Lift_Profile_Start_Angle[module];
+    Smooth_Lift_Angle[module] =
+        Lift_Profile_Start_Angle[module] + distance * SCurve_Fraction(u);
+    Target_Lift_Rod_Omega[module] =
+        distance * SCurve_Fraction_Derivative(u) / Lift_Profile_Duration[module];
+    return Target_Lift_Rod_Omega[module];
+}
+
 /**
  * @brief 更新单个抬升电机目标位置，包含抬升杆侧平滑和齿轮比换算。
  */
@@ -271,12 +1087,8 @@ void Class_Chariot_Lift::Output_Lift_Motor(Enum_Chariot_Lift_Module module)
         params.raise_angle :
         params.retract_angle;
 
-    // Smooth_Lift_Angle 始终表示抬升杆侧角度，仅在发送给电机前换算。
-    Smooth_Lift_Angle[module] = Ramp_To(Smooth_Lift_Angle[module],
-                                        target_lift_rod_angle,
-                                        params.max_speed,
-                                        params.max_speed,
-                                        0.002f);
+    const float target_lift_rod_omega =
+        Update_Lift_Profile(module, target_lift_rod_angle);
 
     if (Motor_Lift[module].Get_Status() != Motor_DM_Status_ENABLE)
     {
@@ -285,9 +1097,11 @@ void Class_Chariot_Lift::Output_Lift_Motor(Enum_Chariot_Lift_Module module)
     else
     {
         const float motor_target_angle = Lift_Rod_To_Motor_Angle(Smooth_Lift_Angle[module]);
+        const float motor_target_omega = target_lift_rod_omega * kLiftMotorToRodRatio;
+        const float hold_torque_ff = Interpolate_Lift_Hold_Torque(module, Smooth_Lift_Angle[module]);
         Motor_Lift[module].Set_Control_Maintain_Postion(motor_target_angle,
-                                                        0.0f,
-                                                        0.0f,
+                                                        motor_target_omega,
+                                                        hold_torque_ff,
                                                         params.kp,
                                                         params.kd);
     }
@@ -299,7 +1113,7 @@ void Class_Chariot_Lift::Output_Lift_Motor(Enum_Chariot_Lift_Module module)
  */
 void Class_Chariot_Lift::Kinematics_Diff_Resolution()
 {
-    /* 1. 只有被选中的抬升模块参与临时差速驱动 */
+    /* 1. 清空所有模块的临时差速目标 */
     for (int i = 0; i < CHARIOT_LIFT_MODULE_NUM; ++i)
     {
         Raw_Target_Left_Omega[i] = 0.0f;
@@ -309,49 +1123,68 @@ void Class_Chariot_Lift::Kinematics_Diff_Resolution()
     if (!Diff_Drive_Enable)
         return;
 
-    const int module = Diff_Drive_Module;
-    const ChariotLiftDriveParams &params = Drive_Params[module];
+    auto resolve_module = [this](int module) {
+        const ChariotLiftDriveParams &params = Drive_Params[module];
 
-    /* 2. 遥控前进速度和偏航角速度限幅 */
-    const float forward_cmd = Clamp(Target_Diff_Forward,
-                                    -params.max_forward_speed,
-                                     params.max_forward_speed);
-    const float yaw = Clamp(Target_Diff_Yaw,
-                            -params.max_yaw_omega,
-                             params.max_yaw_omega);
+        const float forward_cmd = Clamp(Target_Diff_Forward,
+                                        -params.max_forward_speed,
+                                         params.max_forward_speed);
+        const float yaw = Clamp(Target_Diff_Yaw,
+                                -params.max_yaw_omega,
+                                 params.max_yaw_omega);
 
-    // 抬升驱动轮的左右电机方向仍按原车体系标定；新车头为原车尾，所以前进分量取反。
-    const float forward = -forward_cmd;
+        // 抬升驱动轮的左右电机方向仍按原车体系标定；新车头为原车尾，所以前进分量取反。
+        const float forward = -forward_cmd;
 
-    /* 3. 差速运动学分解 */
-    const float left_linear = forward - yaw * params.track_width * 0.5f;
-    const float right_linear = forward + yaw * params.track_width * 0.5f;
+        const float left_linear = forward - yaw * params.track_width * 0.5f;
+        const float right_linear = forward + yaw * params.track_width * 0.5f;
 
-    // 先将车体速度换算为轮轴角速度，再叠加安装方向和速度修正。
-    Raw_Target_Left_Omega[module] =
-        (left_linear / params.wheel_radius) *
-        params.left_direction *
-        params.left_speed_correction;
-    Raw_Target_Right_Omega[module] =
-        (right_linear / params.wheel_radius) *
-        params.right_direction *
-        params.right_speed_correction;
+        Raw_Target_Left_Omega[module] =
+            (left_linear / params.wheel_radius) *
+            params.left_direction *
+            params.left_speed_correction;
+        Raw_Target_Right_Omega[module] =
+            (right_linear / params.wheel_radius) *
+            params.right_direction *
+            params.right_speed_correction;
 
-    /* 4. 轮速归一化，保持左右轮比例不变 */
-    const float max_abs = fmaxf(fabsf(Raw_Target_Left_Omega[module]),
-                                fabsf(Raw_Target_Right_Omega[module]));
-    if (max_abs > params.max_wheel_omega && max_abs > 1e-4f)
+        const float max_abs = fmaxf(fabsf(Raw_Target_Left_Omega[module]),
+                                    fabsf(Raw_Target_Right_Omega[module]));
+        if (max_abs > params.max_wheel_omega && max_abs > 1e-4f)
+        {
+            const float scale = params.max_wheel_omega / max_abs;
+            Raw_Target_Left_Omega[module] *= scale;
+            Raw_Target_Right_Omega[module] *= scale;
+        }
+
+        if (fabsf(Raw_Target_Left_Omega[module]) < params.wheel_deadzone)
+            Raw_Target_Left_Omega[module] = 0.0f;
+        if (fabsf(Raw_Target_Right_Omega[module]) < params.wheel_deadzone)
+            Raw_Target_Right_Omega[module] = 0.0f;
+    };
+
+    if (Is_Stair_Auto_Active())
     {
-        const float scale = params.max_wheel_omega / max_abs;
-        Raw_Target_Left_Omega[module] *= scale;
-        Raw_Target_Right_Omega[module] *= scale;
+        for (int i = 0; i < CHARIOT_LIFT_MODULE_NUM; ++i)
+        {
+            if (Stair_Drive_Module_Enable[i])
+                resolve_module(i);
+        }
+        return;
     }
 
-    /* 5. 死区处理 */
-    if (fabsf(Raw_Target_Left_Omega[module]) < params.wheel_deadzone)
-        Raw_Target_Left_Omega[module] = 0.0f;
-    if (fabsf(Raw_Target_Right_Omega[module]) < params.wheel_deadzone)
-        Raw_Target_Right_Omega[module] = 0.0f;
+    bool any_module_enabled = false;
+    for (int i = 0; i < CHARIOT_LIFT_MODULE_NUM; ++i)
+    {
+        if (Lift_Module_Enable[i])
+        {
+            resolve_module(i);
+            any_module_enabled = true;
+        }
+    }
+
+    if (!any_module_enabled)
+        resolve_module(Diff_Drive_Module);
 }
 
 /**
@@ -441,6 +1274,7 @@ void Class_Chariot_Lift::Disable_All_Motors(bool force_exit)
             Motor_Lift[i].CAN_Send_Exit();
         }
         Smooth_Lift_Angle[i] = Motor_To_Lift_Rod_Angle(Motor_Lift[i].Get_Now_Radian());
+        Reset_Lift_Profile(static_cast<Enum_Chariot_Lift_Module>(i), Smooth_Lift_Angle[i]);
         Lift_Module_Enable[i] = false;
     }
 }
@@ -459,6 +1293,7 @@ void Class_Chariot_Lift::Reset_Drive_State()
         Raw_Target_Right_Omega[i] = 0.0f;
         Target_Left_Omega[i] = 0.0f;
         Target_Right_Omega[i] = 0.0f;
+        Stair_Drive_Module_Enable[i] = false;
     }
 }
 
@@ -503,7 +1338,7 @@ float Class_Chariot_Lift::Ramp_To(float current,
  */
 float Class_Chariot_Lift::Lift_Rod_To_Motor_Angle(float lift_rod_angle)
 {
-    return lift_rod_angle * 3.0f;
+    return lift_rod_angle * kLiftMotorToRodRatio;
 }
 
 /**
@@ -511,5 +1346,5 @@ float Class_Chariot_Lift::Lift_Rod_To_Motor_Angle(float lift_rod_angle)
  */
 float Class_Chariot_Lift::Motor_To_Lift_Rod_Angle(float motor_angle)
 {
-    return motor_angle / 3.0f;
+    return motor_angle / kLiftMotorToRodRatio;
 }

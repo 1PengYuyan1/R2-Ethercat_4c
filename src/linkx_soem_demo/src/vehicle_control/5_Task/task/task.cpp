@@ -29,9 +29,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
+#include <ctime>
 #include <fstream>
 #include <iostream>
+#include <string>
 #include <thread>
 
 #include "math.h"
@@ -56,7 +57,8 @@ constexpr uint32_t kTaskPeriod2Ms            = 2;        ///< 2ms 任务节拍
 constexpr uint32_t kTaskPeriod100Ms          = 100;      ///< 100ms 任务节拍
 constexpr uint32_t kCanStatPrintPeriodMs     = 5000;     ///< CAN 统计打印周期 5s
 constexpr uint32_t kLiveDashboardPeriodMs    = 200;      ///< LIVE 仪表盘刷新周期
-constexpr uint32_t kOpsPrintPeriodMs         = 1000;     ///< OPS 解算数据打印周期 1s
+constexpr uint32_t kToFPrintPeriodMs         = 200;      ///< ToF 终端打印周期
+constexpr uint32_t kDefaultToFButtonLogPeriodMs = 20;    ///< ToF+按钮 CSV 记录周期
 constexpr uint32_t kPeriodDriftWarnSkipFirst = 500;      ///< 前 500 cycle 静默漂移告警
 constexpr int64_t  kPeriodDriftWarnUs        = 1500;     ///< 周期漂移阈值 1.5ms
 
@@ -74,19 +76,118 @@ constexpr uint8_t kCanDataSjw = 3;
 // 需要时通过环境变量 ENABLE_DASHBOARD=1 / ENABLE_CAN_STATS=1 启用。
 bool g_enable_can_stat_print  = false;
 bool g_enable_live_dashboard  = false;
-bool g_enable_ops_print       = true;
+bool g_enable_tof_print       = true;
+bool g_tof_print_stdout       = false;
+bool g_enable_tof_button_log  = true;
+uint32_t g_tof_button_log_period_ms = kDefaultToFButtonLogPeriodMs;
 
 constexpr const char *kDefaultVarDataFile = "var_data/live_variables.log";
-constexpr const char *kDefaultOpsPrintFile = "var_data/ops_terminal.log";
+constexpr const char *kDefaultToFPrintFile = "var_data/ops_terminal.log";
 
 std::ofstream g_var_data_stream;       ///< 仪表盘镜像日志（懒打开）
 bool          g_var_data_stream_inited = false;
-std::ofstream g_ops_print_stream;
-bool          g_ops_print_stream_inited = false;
+std::ofstream g_tof_print_stream;      ///< ToF 简洁终端输出，start 脚本会 tail
+bool          g_tof_print_stream_inited = false;
+std::ofstream g_tof_button_log_stream; ///< ToF+按钮 CSV 数据记录
+bool          g_tof_button_log_stream_inited = false;
+std::string   g_tof_button_log_path;
+uint32_t      g_tof_button_log_rows_since_flush = 0;
 
 static const char *Ok_Fail(bool ok)
 {
     return ok ? "OK" : "FAIL";
+}
+
+static const char *Lift_ToF_Name(int index)
+{
+    switch (index)
+    {
+        case CHARIOT_LIFT_TOF_UP_FRONT: return "up_front";
+        case CHARIOT_LIFT_TOF_UP_BACK: return "up_back";
+        case CHARIOT_LIFT_TOF_DOWN_FRONT: return "down_front";
+        case CHARIOT_LIFT_TOF_DOWN_BACK: return "down_back";
+        default: return "unknown";
+    }
+}
+
+static const char *Lift_ToF_Topic(int index)
+{
+    switch (index)
+    {
+        case CHARIOT_LIFT_TOF_UP_FRONT: return "/high/up_front/range";
+        case CHARIOT_LIFT_TOF_UP_BACK: return "/high/up_back/range";
+        case CHARIOT_LIFT_TOF_DOWN_FRONT: return "/high/down_front/range";
+        case CHARIOT_LIFT_TOF_DOWN_BACK: return "/high/down_back/range";
+        default: return "/high/unknown/range";
+    }
+}
+
+static const char *Button_Name(uint16_t code)
+{
+    switch (code)
+    {
+        case LogF710_Key_IDLE: return "IDLE";
+        case LogF710_Key_X: return "X";
+        case LogF710_Key_A: return "A";
+        case LogF710_Key_B: return "B";
+        case LogF710_Key_Y: return "Y";
+        case LogF710_Key_LB: return "LB";
+        case LogF710_Key_LB_X: return "LB+X";
+        case LogF710_Key_LB_Y: return "LB+Y";
+        case LogF710_Key_LT: return "LT";
+        case LogF710_Key_RB: return "RB";
+        case LogF710_Key_RT: return "RT";
+        case LogF710_Key_Back: return "Back";
+        case LogF710_Key_Start: return "Start";
+        case LogF710_Key_Right: return "Right";
+        case LogF710_Key_Left: return "Left";
+        case LogF710_Key_Up: return "Up";
+        case LogF710_Key_Down: return "Down";
+        default: return "Unknown";
+    }
+}
+
+static void Format_ToF_Range(float range_m, char *buf, size_t len)
+{
+    if (std::isnan(range_m))
+    {
+        std::snprintf(buf, len, "nan");
+    }
+    else if (!std::isfinite(range_m))
+    {
+        std::snprintf(buf, len, "%sinf", std::signbit(range_m) ? "-" : "+");
+    }
+    else
+    {
+        std::snprintf(buf, len, "%.3fm", range_m);
+    }
+}
+
+static void Format_Csv_Float(float value, char *buf, size_t len)
+{
+    if (std::isnan(value))
+    {
+        std::snprintf(buf, len, "nan");
+    }
+    else if (!std::isfinite(value))
+    {
+        std::snprintf(buf, len, "%sinf", std::signbit(value) ? "-" : "+");
+    }
+    else
+    {
+        std::snprintf(buf, len, "%.5f", value);
+    }
+}
+
+static std::string Make_Default_ToF_Button_Log_Path()
+{
+    std::time_t now = std::time(nullptr);
+    std::tm tm_now {};
+    localtime_r(&now, &tm_now);
+
+    char ts[32];
+    std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", &tm_now);
+    return std::string("var_data/tof_button_log_") + ts + ".csv";
 }
 
 }  // namespace
@@ -105,9 +206,26 @@ static void Parse_Diagnostic_Env_Flags()
     if (dash != nullptr && dash[0] == '1')
         g_enable_live_dashboard = true;
 
-    const char *ops = std::getenv("ENABLE_OPS_PRINT");
-    if (ops != nullptr && ops[0] == '0')
-        g_enable_ops_print = false;
+    const char *tof = std::getenv("ENABLE_TOF_PRINT");
+    if (tof != nullptr && tof[0] == '0')
+        g_enable_tof_print = false;
+
+    const char *tof_stdout = std::getenv("TOF_PRINT_STDOUT");
+    if (tof_stdout != nullptr && tof_stdout[0] == '1')
+        g_tof_print_stdout = true;
+
+    const char *tof_button_log = std::getenv("ENABLE_TOF_BUTTON_LOG");
+    if (tof_button_log != nullptr && tof_button_log[0] == '0')
+        g_enable_tof_button_log = false;
+
+    const char *tof_button_period = std::getenv("TOF_BUTTON_LOG_PERIOD_MS");
+    if (tof_button_period != nullptr && tof_button_period[0] != '\0')
+    {
+        char *end = nullptr;
+        const unsigned long parsed = std::strtoul(tof_button_period, &end, 10);
+        if (end != tof_button_period && parsed > 0UL && parsed <= 10000UL)
+            g_tof_button_log_period_ms = static_cast<uint32_t>(parsed);
+    }
 }
 
 static void Ensure_Var_Data_Stream()
@@ -125,19 +243,60 @@ static void Ensure_Var_Data_Stream()
         std::cerr << "[WARN] Failed to open variable data file: " << path << std::endl;
 }
 
-static void Ensure_OPS_Print_Stream()
+static void Ensure_ToF_Print_Stream()
 {
-    if (g_ops_print_stream_inited)
+    if (g_tof_print_stream_inited)
         return;
 
-    const char *path = std::getenv("OPS_PRINT_FILE");
+    const char *path = std::getenv("TOF_PRINT_FILE");
     if (path == nullptr || path[0] == '\0')
-        path = kDefaultOpsPrintFile;
+        path = kDefaultToFPrintFile;
 
-    g_ops_print_stream.open(path, std::ios::app);
-    g_ops_print_stream_inited = true;
-    if (!g_ops_print_stream.is_open())
-        std::cerr << "[WARN] Failed to open OPS print file: " << path << std::endl;
+    g_tof_print_stream.open(path, std::ios::app);
+    g_tof_print_stream_inited = true;
+    if (!g_tof_print_stream.is_open())
+        std::cerr << "[WARN] Failed to open ToF print file: " << path << std::endl;
+}
+
+static void Ensure_ToF_Button_Log_Stream()
+{
+    if (g_tof_button_log_stream_inited)
+        return;
+
+    const char *path = std::getenv("TOF_BUTTON_LOG_FILE");
+    g_tof_button_log_path =
+        (path != nullptr && path[0] != '\0') ? std::string(path) :
+        Make_Default_ToF_Button_Log_Path();
+
+    g_tof_button_log_stream.open(g_tof_button_log_path, std::ios::out);
+    g_tof_button_log_stream_inited = true;
+    if (!g_tof_button_log_stream.is_open())
+    {
+        std::cerr << "[WARN] Failed to open ToF/button log file: "
+                  << g_tof_button_log_path << std::endl;
+        return;
+    }
+
+    g_tof_button_log_stream
+        << "tick_ms,t_s,"
+        << "button_code_dec,button_code_hex,button_name,button_has,button_recent,button_age_ms,"
+        << "stair_state,stair_name,stair_chassis_mps";
+    for (int i = 0; i < CHARIOT_LIFT_TOF_NUM; ++i)
+    {
+        const char *name = Lift_ToF_Name(i);
+        g_tof_button_log_stream
+            << "," << name << "_online"
+            << "," << name << "_valid"
+            << "," << name << "_cm"
+            << "," << name << "_m"
+            << "," << name << "_strength"
+            << "," << name << "_frames";
+    }
+    g_tof_button_log_stream << "\n";
+    g_tof_button_log_stream.flush();
+
+    std::cout << "[LOG] ToF/button CSV: " << g_tof_button_log_path
+              << " period=" << g_tof_button_log_period_ms << "ms" << std::endl;
 }
 
 // ============================================================================
@@ -251,11 +410,15 @@ static void Print_Live_Dashboard()
     if (n < (int)kBufSize - 768)
     {
         n += std::snprintf(buf + n, kBufSize - n,
-                           "\n[LIFT]\n  ctrl=%d diff=%d diff_cmd=(%.3f, %.3f)\n",
+                           "\n[LIFT]\n  ctrl=%d diff=%d diff_cmd=(%.3f, %.3f)"
+                           " stair=%s(%d) stair_chassis=%.3f\n",
                            (int)robot.Lift.Get_Control_Type(),
                            robot.Lift.Get_Diff_Drive_Enable() ? 1 : 0,
                            robot.Lift.Get_Target_Diff_Forward(),
-                           robot.Lift.Get_Target_Diff_Yaw());
+                           robot.Lift.Get_Target_Diff_Yaw(),
+                           robot.Lift.Get_Stair_State_Name(),
+                           (int)robot.Lift.Get_Stair_State(),
+                           robot.Lift.Get_Stair_Chassis_Forward());
         for (int i = 0; i < CHARIOT_LIFT_MODULE_NUM && n < (int)kBufSize - 256; ++i)
         {
             auto &dl = robot.Lift.Motor_Drive_Left[i];
@@ -275,6 +438,26 @@ static void Print_Live_Dashboard()
         }
     }
 
+    if (n < (int)kBufSize - 512)
+    {
+        n += std::snprintf(buf + n, kBufSize - n, "\n[LIFT-TOF]\n");
+        for (int i = 0; i < CHARIOT_LIFT_TOF_NUM && n < (int)kBufSize - 128; ++i)
+        {
+            const auto sensor = static_cast<Enum_Chariot_Lift_ToF_Sensor>(i);
+            const ChariotLiftToFData &tof = robot.Lift.Get_ToF_Data(sensor);
+            char range_buf[24];
+            Format_ToF_Range(tof.range_m, range_buf, sizeof(range_buf));
+            n += std::snprintf(buf + n, kBufSize - n,
+                               "  %-10s %s range=%s raw=%ucm strength=%u frames=%u\n",
+                               Lift_ToF_Name(i),
+                               tof.online ? (tof.valid ? "OK " : "BAD") : "OFF",
+                               range_buf,
+                               (unsigned)tof.distance_cm,
+                               (unsigned)tof.strength,
+                               (unsigned)tof.frame_count);
+        }
+    }
+
     if (n > 0)
     {
         std::fwrite(buf, 1, (size_t)n, stdout);
@@ -287,64 +470,102 @@ static void Print_Live_Dashboard()
     }
 }
 
-static void Print_OPS_Data()
+static void Print_ToF_Terminal_Data()
 {
-    Ensure_OPS_Print_Stream();
+    Ensure_ToF_Print_Stream();
 
-    const Struct_OPS_Rx_Data data = robot.ops.getData();
-    const Struct_OPS_Raw_CAN_Frame raw = robot.ops.getRawCANFrame();
-    const Struct_OPS_Decoded_CAN_Frame decoded = robot.ops.getLastDecodedFrame();
-    const bool connected = robot.ops.isConnected();
-    const bool recent_frame = robot.ops.hasRecentFrame();
-    const char *status = connected ? "OK" : (recent_frame ? "BAD_NAN" : "LOST");
+    char line[768];
+    int n = std::snprintf(line, sizeof(line), "[LIFT-TOF]");
+    for (int i = 0; i < CHARIOT_LIFT_TOF_NUM && n < (int)sizeof(line) - 96; ++i)
+    {
+        const auto sensor = static_cast<Enum_Chariot_Lift_ToF_Sensor>(i);
+        const ChariotLiftToFData &tof = robot.Lift.Get_ToF_Data(sensor);
+        char range_buf[24];
+        Format_ToF_Range(tof.range_m, range_buf, sizeof(range_buf));
 
-    char line[512];
-    int n = std::snprintf(line, sizeof(line),
-                          "[OPS] %s  pos_x=%+.2f mm  pos_y=%+.2f mm"
-                          "  yaw=%+.4f deg  pitch=%+.4f deg  roll=%+.4f deg"
-                          "  omega_z=%+.4f deg/s  decoded=%u invalid=%u  can2_id=0x01 dlc=%u data=",
-                          status,
-                          data.Pos_X,
-                          data.Pos_Y,
-                          data.Yaw,
-                          data.Pitch,
-                          data.Roll,
-                          data.Omega_Z,
-                          decoded.count,
-                          decoded.invalid_count,
-                          (unsigned)raw.dlen);
-    for (uint8_t i = 0; i < raw.dlen; ++i)
-    {
-        if (n < (int)sizeof(line))
-        {
-            n += std::snprintf(line + n, sizeof(line) - n,
-                               "%02X%s", raw.data[i], (i + 1U < raw.dlen) ? " " : "");
-        }
+        const char *value = tof.online ? range_buf : "no_data";
+        const char *status = tof.online ? (tof.valid ? "OK" : "BAD") : "OFF";
+        n += std::snprintf(line + n, sizeof(line) - n,
+                           "%s%s=%s raw=%ucm %s",
+                           (i == 0) ? " " : " | ",
+                           Lift_ToF_Topic(i),
+                           value,
+                           (unsigned)tof.distance_cm,
+                           status);
     }
+
     if (n < (int)sizeof(line))
-    {
-        n += std::snprintf(line + n, sizeof(line) - n, " frame28=");
-    }
-    for (uint8_t i = 0; i < decoded.data.size(); ++i)
-    {
-        if (n < (int)sizeof(line))
-        {
-            n += std::snprintf(line + n, sizeof(line) - n,
-                               "%02X%s", decoded.data[i], (i + 1U < decoded.data.size()) ? " " : "");
-        }
-    }
-    if (n < (int)sizeof(line))
-    {
         n += std::snprintf(line + n, sizeof(line) - n, "\n");
-    }
-    const size_t len = (n > 0 && n < (int)sizeof(line)) ? (size_t)n : std::strlen(line);
-    std::fwrite(line, 1, len, stdout);
-    if (g_ops_print_stream.is_open())
+    else
+        line[sizeof(line) - 1] = '\0';
+
+    const size_t len = (n > 0 && n < (int)sizeof(line)) ?
+        static_cast<size_t>(n) :
+        sizeof(line) - 1U;
+
+    bool wrote_file = false;
+    if (g_tof_print_stream.is_open())
     {
-        g_ops_print_stream.write(line, len);
-        g_ops_print_stream.flush();
+        g_tof_print_stream.write(line, len);
+        g_tof_print_stream.flush();
+        wrote_file = true;
     }
-    std::fflush(stdout);
+
+    if (g_tof_print_stdout || !wrote_file)
+    {
+        std::fwrite(line, 1, len, stdout);
+        std::fflush(stdout);
+    }
+}
+
+static void Write_ToF_Button_Log(uint32_t tick)
+{
+    Ensure_ToF_Button_Log_Stream();
+    if (!g_tof_button_log_stream.is_open())
+        return;
+
+    const Class_Robot::ButtonSnapshot button = robot.Get_Button_Snapshot();
+
+    char button_hex[8];
+    std::snprintf(button_hex, sizeof(button_hex), "0x%04X", (unsigned)button.code);
+
+    g_tof_button_log_stream
+        << tick << ','
+        << (static_cast<double>(tick) * 0.001) << ','
+        << (unsigned)button.code << ','
+        << button_hex << ','
+        << Button_Name(button.code) << ','
+        << (button.has_buttons ? 1 : 0) << ','
+        << (button.recent ? 1 : 0) << ','
+        << button.age_ms << ','
+        << (int)robot.Lift.Get_Stair_State() << ','
+        << robot.Lift.Get_Stair_State_Name() << ','
+        << robot.Lift.Get_Stair_Chassis_Forward();
+
+    for (int i = 0; i < CHARIOT_LIFT_TOF_NUM; ++i)
+    {
+        const auto sensor = static_cast<Enum_Chariot_Lift_ToF_Sensor>(i);
+        const ChariotLiftToFData &tof = robot.Lift.Get_ToF_Data(sensor);
+        char range_m[24];
+        Format_Csv_Float(tof.range_m, range_m, sizeof(range_m));
+
+        g_tof_button_log_stream
+            << ',' << (tof.online ? 1 : 0)
+            << ',' << (tof.valid ? 1 : 0)
+            << ',' << (unsigned)tof.distance_cm
+            << ',' << range_m
+            << ',' << (unsigned)tof.strength
+            << ',' << (unsigned)tof.frame_count;
+    }
+
+    g_tof_button_log_stream << '\n';
+
+    ++g_tof_button_log_rows_since_flush;
+    if (g_tof_button_log_rows_since_flush >= 50U)
+    {
+        g_tof_button_log_stream.flush();
+        g_tof_button_log_rows_since_flush = 0U;
+    }
 }
 
 // ============================================================================
@@ -479,9 +700,10 @@ static void Dispatch_Robot_Tick(uint32_t tick)
 /**
  * @brief 退出时强制失能所有 DM 执行器。
  *
- *  对象（共 10 个执行器）：
+ *  对象（共 11 个执行器）：
  *    - 4× DM3519 全向轮（ch0: ID 0x01/0x02, ch1: ID 0x01/0x02）
  *    - 6× 前/后抬升（ch0/ch1: ID 0x03/0x04/0x05）
+ *    - 1× 辅助 DM 电机（ch0: ID 0x07）
  *
  *  每个 tick 重新入队一次 CAN_Send_Exit；linkx_send_pdos 每 ch 出 1 帧，
  *  共跑 50 cycle ≈ 50ms（实际加 PDO sync 略多），保证多 ID 全部到总线。
@@ -519,9 +741,11 @@ static void Disable_All_Devices()
             robot.Lift.Motor_Drive_Right[i].CAN_Send_Exit();
             robot.Lift.Motor_Lift[i].CAN_Send_Exit();
         }
+        robot.Auxiliary_Motor.CAN_Send_Exit();
         // 软件级状态字也置 DISABLE，防止 1ms 回调再次入队 MIT 帧
         robot.Chassis.Set_Chassis_Control_Type(Chassis_Omni_Control_Type_DISABLE);
         robot.Lift.Set_Control_Type(CHARIOT_LIFT_CONTROL_DISABLE);
+        robot.Auxiliary_Motor.Set_Control_Status(Motor_DM_Status_DISABLE);
 
         linkx_send_pdos(&linkx_dev);
 
@@ -536,8 +760,15 @@ static void Disable_All_Devices()
  */
 static void Dispatch_Periodic_Diagnostics(uint32_t tick)
 {
-    if (g_enable_ops_print && tick != 0 && (tick % kOpsPrintPeriodMs) == 0)
-        Print_OPS_Data();
+    if (g_enable_tof_button_log &&
+        tick != 0 &&
+        (tick % g_tof_button_log_period_ms) == 0)
+    {
+        Write_ToF_Button_Log(tick);
+    }
+
+    if (g_enable_tof_print && tick != 0 && (tick % kToFPrintPeriodMs) == 0)
+        Print_ToF_Terminal_Data();
 
     if (g_enable_can_stat_print && tick != 0 && (tick % kCanStatPrintPeriodMs) == 0)
     {
@@ -566,6 +797,16 @@ static void Check_Period_Drift(uint32_t tick,
         std::fprintf(stderr, "[TASK][WARN] tick=%u drift=%lldus\n",
                      (unsigned)tick, (long long)drift_us);
     }
+}
+
+static void Flush_Diagnostic_Streams()
+{
+    if (g_tof_button_log_stream.is_open())
+        g_tof_button_log_stream.flush();
+    if (g_tof_print_stream.is_open())
+        g_tof_print_stream.flush();
+    if (g_var_data_stream.is_open())
+        g_var_data_stream.flush();
 }
 
 // ============================================================================
@@ -608,6 +849,8 @@ void Robot_Control_Loop(const char *ifname)
     }
 
     // 退出钩子：强制失能 → 关 ROS 桥
+    Flush_Diagnostic_Streams();
     Disable_All_Devices();
+    Flush_Diagnostic_Streams();
     robot.Stop_ROS2_Bridge();
 }

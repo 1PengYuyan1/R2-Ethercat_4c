@@ -5,6 +5,7 @@
 // Hardware mapping follows Class_Chariot_Lift:
 //   front lift: LinkX CAN0, DM3519 Tx 0x05, feedback Rx 0x15
 //   rear  lift: LinkX CAN1, DM3519 Tx 0x05, feedback Rx 0x15
+//   front extra: LinkX CAN0, DM motor Tx 0x07, feedback Rx 0x17
 //
 // Example:
 //   sudo IFNAME=enp86s0 build/linkx_soem_demo/lift_3519_feedback --module both
@@ -44,6 +45,10 @@ constexpr uint32_t kAlivePeriodMs = 100;
 constexpr float kLiftMotorToRodRatio = 3.0f;
 constexpr float kRadPerSecToRpm = 60.0f / (2.0f * 3.14159265358979323846f);
 constexpr float kCelsiusToKelvin = 273.15f;
+constexpr uint8_t kExtraMotorChannel = 0;
+constexpr uint8_t kExtraMotorTxId = 0x07;
+constexpr uint8_t kExtraMotorRxId = 0x17;
+constexpr const char *kExtraMotorName = "front07";
 
 struct ModuleInfo
 {
@@ -56,6 +61,7 @@ enum class ModuleSelection
 {
     Rear,
     Front,
+    Extra07,
     Both,
 };
 
@@ -66,7 +72,8 @@ const std::array<ModuleInfo, CHARIOT_LIFT_MODULE_NUM> kModuleInfo {{
 
 struct LiftFeedbackSample
 {
-    const ModuleInfo *info;
+    const char *name;
+    uint8_t can_channel;
     uint16_t rx_id;
     uint16_t tx_id;
     const char *online_text;
@@ -85,6 +92,7 @@ struct LiftFeedbackSample
 ecat_master_t st_master {};
 linkx_t st_linkx {};
 Class_Chariot_Lift st_lift;
+Class_Motor_DM_Normal st_extra_motor_ch0_id7;
 std::atomic<bool> st_running {true};
 
 void on_signal(int)
@@ -174,6 +182,8 @@ ModuleSelection parse_module_selection(const std::string &value, bool &ok)
         return ModuleSelection::Rear;
     if (value == "front" || value == "1")
         return ModuleSelection::Front;
+    if (value == "extra" || value == "front07" || value == "id7")
+        return ModuleSelection::Extra07;
     if (value == "both" || value == "all")
         return ModuleSelection::Both;
 
@@ -186,6 +196,13 @@ bool module_selected(ModuleSelection selection, Enum_Chariot_Lift_Module module)
     return selection == ModuleSelection::Both ||
            (selection == ModuleSelection::Rear && module == CHARIOT_LIFT_MODULE_REAR) ||
            (selection == ModuleSelection::Front && module == CHARIOT_LIFT_MODULE_FRONT);
+}
+
+bool extra_motor_selected(ModuleSelection selection)
+{
+    return selection == ModuleSelection::Both ||
+           selection == ModuleSelection::Front ||
+           selection == ModuleSelection::Extra07;
 }
 
 Class_Motor_DM_Normal &lift_motor(Enum_Chariot_Lift_Module module)
@@ -274,7 +291,14 @@ bool ec_receive_once(bool allow_stopping = false)
     {
         while (linkx_quick_recv(&st_linkx, ch, &msg))
         {
-            st_lift.CAN_Rx_Callback(ch, msg.id, msg.data);
+            const bool routed = st_lift.CAN_Rx_Callback(ch, msg.id, msg.data);
+            const uint32_t can_id_std = msg.id & 0x7FFU;
+            if (!routed &&
+                ch == kExtraMotorChannel &&
+                can_id_std == st_extra_motor_ch0_id7.DM_CAN_Rx_ID)
+            {
+                st_extra_motor_ch0_id7.CAN_RxCpltCallback(msg.data);
+            }
         }
     }
 
@@ -288,6 +312,9 @@ void alive_selected_lift_motors(ModuleSelection selection)
         if (module_selected(selection, info.module))
             lift_motor(info.module).TIM_Alive_PeriodElapsedCallback();
     }
+
+    if (extra_motor_selected(selection))
+        st_extra_motor_ch0_id7.TIM_Alive_PeriodElapsedCallback();
 }
 
 void enable_selected_lift_motors(ModuleSelection selection)
@@ -306,6 +333,16 @@ void enable_selected_lift_motors(ModuleSelection selection)
             motor.CAN_Send_Enter();
         }
     }
+
+    if (extra_motor_selected(selection))
+    {
+        const auto ctrl = st_extra_motor_ch0_id7.Get_Now_Control_Status();
+        if (ctrl != Motor_DM_Control_Status_ENABLE)
+        {
+            st_extra_motor_ch0_id7.CAN_Send_Clear_Error();
+            st_extra_motor_ch0_id7.CAN_Send_Enter();
+        }
+    }
 }
 
 void exit_selected_lift_motors(ModuleSelection selection)
@@ -315,6 +352,9 @@ void exit_selected_lift_motors(ModuleSelection selection)
         if (module_selected(selection, info.module))
             lift_motor(info.module).CAN_Send_Exit();
     }
+
+    if (extra_motor_selected(selection))
+        st_extra_motor_ch0_id7.CAN_Send_Exit();
 }
 
 const char *module_selection_name(ModuleSelection selection)
@@ -323,6 +363,7 @@ const char *module_selection_name(ModuleSelection selection)
     {
         case ModuleSelection::Rear:  return "rear";
         case ModuleSelection::Front: return "front";
+        case ModuleSelection::Extra07:return "front07";
         case ModuleSelection::Both:  return "both";
         default:                     return "unknown";
     }
@@ -370,16 +411,18 @@ bool ensure_parent_directory_exists(const std::string &path)
     return ensure_directory_exists(path.substr(0, slash));
 }
 
-LiftFeedbackSample read_lift_feedback_sample(const ModuleInfo &info)
+LiftFeedbackSample read_motor_feedback_sample(const char *name,
+                                              uint8_t can_channel,
+                                              Class_Motor_DM_Normal &motor)
 {
-    auto &motor = lift_motor(info.module);
     const float motor_pos_rad = motor.Get_Now_Radian();
     const float motor_vel_rad_s = motor.Get_Now_Omega();
     const float rod_pos_rad = motor_pos_rad / kLiftMotorToRodRatio;
     const float rod_vel_rad_s = motor_vel_rad_s / kLiftMotorToRodRatio;
 
     LiftFeedbackSample sample {};
-    sample.info = &info;
+    sample.name = name;
+    sample.can_channel = can_channel;
     sample.rx_id = motor.DM_CAN_Rx_ID;
     sample.tx_id = motor.DM_CAN_Tx_ID;
     sample.online_text = dm_status_name(motor.Get_Status());
@@ -394,6 +437,18 @@ LiftFeedbackSample read_lift_feedback_sample(const ModuleInfo &info)
     sample.rod_vel_rad_s = rod_vel_rad_s;
     sample.rod_rpm = rod_vel_rad_s * kRadPerSecToRpm;
     return sample;
+}
+
+LiftFeedbackSample read_lift_feedback_sample(const ModuleInfo &info)
+{
+    return read_motor_feedback_sample(info.name, info.can_channel, lift_motor(info.module));
+}
+
+LiftFeedbackSample read_extra_motor_feedback_sample()
+{
+    return read_motor_feedback_sample(kExtraMotorName,
+                                      kExtraMotorChannel,
+                                      st_extra_motor_ch0_id7);
 }
 
 class CsvRecorder
@@ -429,16 +484,10 @@ public:
         if (!file_.is_open())
             return;
 
-        file_ << std::fixed << std::setprecision(6);
-        for (const auto &info : kModuleInfo)
-        {
-            if (!module_selected(selection, info.module))
-                continue;
-
-            const LiftFeedbackSample sample = read_lift_feedback_sample(info);
+        auto write_sample = [&](const LiftFeedbackSample &sample) {
             file_ << elapsed_s << ','
-                  << sample.info->name << ','
-                  << static_cast<int>(sample.info->can_channel) << ','
+                  << sample.name << ','
+                  << static_cast<int>(sample.can_channel) << ','
                   << "0x" << std::hex << std::uppercase << sample.rx_id << std::dec << ','
                   << "0x" << std::hex << std::uppercase << sample.tx_id << std::dec << ','
                   << sample.online_text << ','
@@ -453,7 +502,18 @@ public:
                   << sample.rod_vel_rad_s << ','
                   << sample.rod_rpm << '\n';
             ++rows_;
+        };
+
+        file_ << std::fixed << std::setprecision(6);
+        for (const auto &info : kModuleInfo)
+        {
+            if (!module_selected(selection, info.module))
+                continue;
+
+            write_sample(read_lift_feedback_sample(info));
         }
+        if (extra_motor_selected(selection))
+            write_sample(read_extra_motor_feedback_sample());
         file_.flush();
     }
 
@@ -503,16 +563,10 @@ void print_feedback_table(ModuleSelection selection,
 
     std::cout << std::string(129, '-') << "\n";
 
-    for (const auto &info : kModuleInfo)
-    {
-        if (!module_selected(selection, info.module))
-            continue;
-
-        const LiftFeedbackSample sample = read_lift_feedback_sample(info);
-
+    auto print_sample = [](const LiftFeedbackSample &sample) {
         std::cout << std::left
-                  << std::setw(7)  << sample.info->name
-                  << std::setw(4)  << static_cast<int>(sample.info->can_channel)
+                  << std::setw(7)  << sample.name
+                  << std::setw(4)  << static_cast<int>(sample.can_channel)
                   << std::setw(6)  << hex_id(sample.rx_id)
                   << std::setw(6)  << hex_id(sample.tx_id)
                   << std::setw(8)  << sample.online_text
@@ -528,7 +582,19 @@ void print_feedback_table(ModuleSelection selection,
                   << std::setw(10) << sample.rod_vel_rad_s
                   << std::setw(10) << sample.rod_rpm
                   << "\n";
+    };
+
+    for (const auto &info : kModuleInfo)
+    {
+        if (!module_selected(selection, info.module))
+            continue;
+
+        const LiftFeedbackSample sample = read_lift_feedback_sample(info);
+        print_sample(sample);
     }
+
+    if (extra_motor_selected(selection))
+        print_sample(read_extra_motor_feedback_sample());
 
     std::cout << "\nUnits: MPos/RPos=rad, MVel/RVel=rad/s, MRPM/RRPM=rpm, Torque=Nm, MOS/Rotor=C\n";
     std::cout << "Limits: pmax=" << lift_motor(CHARIOT_LIFT_MODULE_FRONT).Get_Radian_Max()
@@ -550,13 +616,14 @@ void print_usage(const char *argv0)
 {
     std::cerr
         << "Usage:\n"
-        << "  " << argv0 << " [--ifname enp86s0] [--module rear|front|both]\n"
+        << "  " << argv0 << " [--ifname enp86s0] [--module rear|front|front07|both]\n"
         << "        [--print-hz 10] [--duration 0] [--enable 1] [--exit-on-stop 1]\n"
         << "        [--record 0|1] [--record-path var_data/lift_3519_feedback_log.csv]\n"
         << "        [--record-hz 50]\n\n"
         << "Notes:\n"
         << "  duration=0 keeps running until Ctrl-C.\n"
         << "  enable=1 sends DM clear-error/enter frames so feedback is live.\n"
+        << "  front07 monitors CAN0 Tx 0x07 / feedback Rx 0x17.\n"
         << "  It does not send MIT position/velocity/torque command frames.\n"
         << "  rod feedback is calculated as rod = motor / 3.\n";
 }
@@ -613,7 +680,7 @@ int main(int argc, char **argv)
         module_ok);
     if (!module_ok)
     {
-        std::cerr << "[LIFT3519] invalid --module, expected rear|front|both\n";
+        std::cerr << "[LIFT3519] invalid --module, expected rear|front|front07|both\n";
         print_usage(argv[0]);
         return 1;
     }
@@ -664,6 +731,11 @@ int main(int argc, char **argv)
                   << "  RECORD_HZ     : " << record_hz << "\n";
     }
     std::cout << "  GEAR          : motor:rod = 3:1, rod = motor / 3\n"
+              << "  EXTRA MOTOR   : " << kExtraMotorName
+              << " CAN" << static_cast<int>(kExtraMotorChannel)
+              << " Tx 0x" << std::hex << std::uppercase << static_cast<int>(kExtraMotorTxId)
+              << " Rx 0x" << static_cast<int>(kExtraMotorRxId)
+              << std::dec << "\n"
               << "===============================================\n";
 
     print_interface_preflight(ifname);
@@ -688,6 +760,17 @@ int main(int argc, char **argv)
     }
 
     st_lift.Init(&st_linkx);
+    st_extra_motor_ch0_id7.Init(&st_linkx,
+                                kExtraMotorChannel,
+                                kExtraMotorRxId,
+                                kExtraMotorTxId,
+                                Motor_DM_Control_Method_NORMAL_MIT,
+                                lift_motor(CHARIOT_LIFT_MODULE_FRONT).Get_Radian_Max(),
+                                lift_motor(CHARIOT_LIFT_MODULE_FRONT).Get_Omega_Max(),
+                                lift_motor(CHARIOT_LIFT_MODULE_FRONT).Get_Torque_Max(),
+                                lift_motor(CHARIOT_LIFT_MODULE_FRONT).Get_Current_Max());
+    st_extra_motor_ch0_id7.Set_Use_FDCAN(true);
+    st_extra_motor_ch0_id7.Set_Force_Output_Without_Feedback(false);
 
     CsvRecorder recorder;
     if (record_enabled && !recorder.Open(record_path))

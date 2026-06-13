@@ -4,9 +4,7 @@
 //
 // What it measures:
 //   1) +X/-X/+Y/-Y straight commands with omega=0.
-//   2) OPS displacement/yaw drift if OPS frames are present on CAN2 std id 0x01.
-//   3) Per-wheel actual/target speed ratio and torque while moving.
-//   4) Least-squares effective wheel scale and suggested wheel_speed_correction.
+//   2) Per-wheel actual/target speed ratio and torque while moving.
 //
 // Usage:
 //   sudo IFNAME=enp86s0 ros2 run linkx_soem_demo omni_motion_record
@@ -25,7 +23,6 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
@@ -50,7 +47,6 @@ constexpr uint32_t kCtrlPeriodMs = 1;
 constexpr uint32_t kChassisPeriodTicks = 2;
 constexpr uint32_t kAlivePeriodTicks = 100;
 constexpr float kThermalLimitC = 70.0f;
-constexpr float kDegToRad = 0.017453292519943295769f;
 constexpr float kPi = 3.14159265358979323846f;
 
 constexpr std::array<float, OMNI_WHEEL_NUM> kWheelTheta = {
@@ -80,11 +76,6 @@ struct Options
     float duration_s = 5.0f;
     float settle_s = 1.0f;
     float analysis_delay_s = 1.0f;
-    float ops_yaw_offset_deg = 90.0f;
-    bool yaw_hold = false;
-    float yaw_kp = 1.2f * kDegToRad;
-    float yaw_kd = 0.08f * kDegToRad;
-    float yaw_limit_rad_s = 0.35f;
     float startup_window_s = 0.60f;
     float reach_frac = 0.95f;
     float reach_abs_tol = 0.2f;
@@ -94,172 +85,6 @@ struct Options
     std::string csv_path;
     std::string summary_path;
 };
-
-struct OpsSample
-{
-    bool valid = false;
-    float yaw_deg = 0.0f;
-    float pos_x_mm = 0.0f;
-    float pos_y_mm = 0.0f;
-    float omega_z_deg_s = 0.0f;
-    uint32_t frame_count = 0;
-    uint32_t invalid_count = 0;
-};
-
-class OpsCanParser
-{
-public:
-    void push(const uint8_t *data, uint8_t dlen)
-    {
-        if (data == nullptr || dlen == 0)
-            return;
-
-        if (rx_len_ + dlen > rx_.size())
-        {
-            const size_t drop = (rx_len_ + dlen) - rx_.size();
-            drop_front(drop);
-        }
-
-        std::copy(data, data + dlen, rx_.begin() + rx_len_);
-        rx_len_ += dlen;
-        last_frame_ns_ = now_ns();
-        parse();
-    }
-
-    OpsSample sample() const
-    {
-        OpsSample s;
-        s.valid = connected();
-        s.yaw_deg = yaw_deg_;
-        s.pos_x_mm = pos_x_mm_;
-        s.pos_y_mm = pos_y_mm_;
-        s.omega_z_deg_s = omega_z_deg_s_;
-        s.frame_count = frame_count_;
-        s.invalid_count = invalid_count_;
-        return s;
-    }
-
-    bool connected() const
-    {
-        return last_update_ns_ > 0 && (now_ns() - last_update_ns_) < 500000000LL;
-    }
-
-private:
-    static constexpr uint8_t kHeader0 = 0x0D;
-    static constexpr uint8_t kHeader1 = 0x0A;
-    static constexpr uint8_t kTail0 = 0x0A;
-    static constexpr uint8_t kTail1 = 0x0D;
-    static constexpr size_t kFrameLen = 28;
-    static constexpr size_t kPayloadOffset = 2;
-
-    std::array<uint8_t, 64> rx_ {};
-    size_t rx_len_ = 0;
-    int64_t last_frame_ns_ = 0;
-    int64_t last_update_ns_ = 0;
-
-    float yaw_deg_ = 0.0f;
-    float pos_x_mm_ = 0.0f;
-    float pos_y_mm_ = 0.0f;
-    float omega_z_deg_s_ = 0.0f;
-    uint32_t frame_count_ = 0;
-    uint32_t invalid_count_ = 0;
-
-    static int64_t now_ns()
-    {
-        return std::chrono::duration_cast<std::chrono::nanoseconds>(
-                   std::chrono::steady_clock::now().time_since_epoch())
-            .count();
-    }
-
-    static float read_float_le(const uint8_t *bytes)
-    {
-        const uint32_t word = static_cast<uint32_t>(bytes[0]) |
-                              (static_cast<uint32_t>(bytes[1]) << 8) |
-                              (static_cast<uint32_t>(bytes[2]) << 16) |
-                              (static_cast<uint32_t>(bytes[3]) << 24);
-        float value = 0.0f;
-        std::memcpy(&value, &word, sizeof(value));
-        return value;
-    }
-
-    void drop_front(size_t n)
-    {
-        if (n == 0)
-            return;
-        if (n >= rx_len_)
-        {
-            rx_len_ = 0;
-            return;
-        }
-
-        const size_t remain = rx_len_ - n;
-        std::move(rx_.begin() + n, rx_.begin() + rx_len_, rx_.begin());
-        rx_len_ = remain;
-    }
-
-    void parse()
-    {
-        while (true)
-        {
-            size_t header = rx_len_;
-            for (size_t i = 0; i + 1 < rx_len_; ++i)
-            {
-                if (rx_[i] == kHeader0 && rx_[i + 1] == kHeader1)
-                {
-                    header = i;
-                    break;
-                }
-            }
-
-            if (header == rx_len_)
-            {
-                if (rx_len_ > 0)
-                {
-                    rx_[0] = rx_[rx_len_ - 1];
-                    rx_len_ = 1;
-                }
-                return;
-            }
-
-            if (header > 0)
-                drop_front(header);
-
-            if (rx_len_ < kFrameLen)
-                return;
-
-            if (rx_[kFrameLen - 2] != kTail0 || rx_[kFrameLen - 1] != kTail1)
-            {
-                drop_front(2);
-                continue;
-            }
-
-            const uint8_t *payload = rx_.data() + kPayloadOffset;
-            const float yaw = read_float_le(payload + 0);
-            const float pos_x = read_float_le(payload + 12);
-            const float pos_y = read_float_le(payload + 16);
-            const float omega_z = read_float_le(payload + 20);
-            frame_count_++;
-
-            if (std::isfinite(yaw) && std::isfinite(pos_x) &&
-                std::isfinite(pos_y) && std::isfinite(omega_z))
-            {
-                yaw_deg_ = yaw;
-                pos_x_mm_ = pos_x;
-                pos_y_mm_ = pos_y;
-                omega_z_deg_s_ = omega_z;
-                last_update_ns_ = now_ns();
-            }
-            else
-            {
-                invalid_count_++;
-            }
-
-            drop_front(kFrameLen);
-        }
-    }
-};
-
-OpsCanParser st_ops;
 
 struct Segment
 {
@@ -306,20 +131,7 @@ struct Stats
 struct SegmentResult
 {
     Segment segment;
-    bool ops_valid = false;
     float measure_dt_s = 0.0f;
-    float body_dx_m = 0.0f;
-    float body_dy_m = 0.0f;
-    float body_vx_mps = 0.0f;
-    float body_vy_mps = 0.0f;
-    float yaw_delta_deg = 0.0f;
-    float yaw_rate_deg_s = 0.0f;
-    float along_m = 0.0f;
-    float lateral_m = 0.0f;
-    float lateral_mm_per_m = 0.0f;
-    float yaw_deg_per_m = 0.0f;
-    OpsSample ops_start;
-    OpsSample ops_end;
 
     Stats odom_vx;
     Stats odom_vy;
@@ -344,37 +156,10 @@ struct SegmentResult
     std::array<float, OMNI_WHEEL_NUM> wheel_reach_time_s {};
 };
 
-struct LeastSquares4
-{
-    double ata[4][4] {};
-    double aty[4] {};
-    int rows = 0;
-
-    void add_row(const std::array<double, 4> &a, double y)
-    {
-        for (int r = 0; r < 4; ++r)
-        {
-            aty[r] += a[r] * y;
-            for (int c = 0; c < 4; ++c)
-                ata[r][c] += a[r] * a[c];
-        }
-        rows++;
-    }
-};
-
 void on_signal(int)
 {
     st_running.store(false);
     st_master.is_running = false;
-}
-
-float normalize_angle_deg(float angle)
-{
-    while (angle > 180.0f)
-        angle -= 360.0f;
-    while (angle < -180.0f)
-        angle += 360.0f;
-    return angle;
 }
 
 float clamp_float(float value, float min_value, float max_value)
@@ -449,11 +234,6 @@ void print_usage(const char *argv0)
         << "  --duration SEC          command duration per segment, default 5.0\n"
         << "  --settle SEC            zero-command settle time before each segment, default 1.0\n"
         << "  --analysis-delay SEC    ignored time after command start, default 1.0\n"
-        << "  --ops-yaw-offset-deg D  OPS yaw to chassis body yaw offset, default -90\n"
-        << "  --yaw-hold 0|1         close yaw with OPS during test, default 0\n"
-        << "  --yaw-kp K             yaw hold proportional gain, rad/s per deg, default 0.02094\n"
-        << "  --yaw-kd K             yaw hold damping gain, rad/s per deg/s, default 0.00140\n"
-        << "  --yaw-limit W          yaw correction limit rad/s, default 0.35\n"
         << "  --startup-window SEC   startup diagnostic window, default 0.60\n"
         << "  --reach-frac F         wheel reach threshold fraction, default 0.95\n"
         << "  --reach-abs-tol RADS   wheel reach absolute tolerance, default 0.2\n"
@@ -500,7 +280,7 @@ std::vector<Segment> make_segments(const Options &opt)
     return segments;
 }
 
-void dispatch_wheel_feedback(uint8_t ch, uint32_t can_id, uint8_t *data, uint8_t dlen)
+void dispatch_wheel_feedback(uint8_t ch, uint32_t can_id, uint8_t *data, uint8_t)
 {
     const uint32_t id_std = can_id & 0x7FFU;
 
@@ -526,10 +306,6 @@ void dispatch_wheel_feedback(uint8_t ch, uint32_t can_id, uint8_t *data, uint8_t
     {
         const int indices[] = {0, 3};
         dispatch(indices, 2);
-    }
-    else if (ch == 2 && id_std == 0x01U)
-    {
-        st_ops.push(data, dlen);
     }
 }
 
@@ -631,17 +407,9 @@ float limited_expected_wheel_omega(int i, float vx, float vy, float omega)
     return wheel[i];
 }
 
-float ideal_wheel_linear(int i, float vx, float vy, float omega)
-{
-    return -vx * std::sin(kWheelTheta[i]) +
-            vy * std::cos(kWheelTheta[i]) +
-            omega * Omni_Wheel_To_Core_Distance_Define;
-}
-
 void write_csv_header(std::ofstream &csv)
 {
     csv << "segment,t_s,cmd_vx,cmd_vy,cmd_omega,profiled_vx,profiled_vy,profiled_omega,"
-        << "ops_valid,ops_x_mm,ops_y_mm,ops_yaw_deg,"
         << "odom_vx,odom_vy,odom_omega";
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
     {
@@ -664,15 +432,12 @@ void write_csv_header(std::ofstream &csv)
 
 void write_csv_sample(std::ofstream &csv, const Segment &seg, float t_s)
 {
-    const OpsSample ops = st_ops.sample();
     csv << seg.name << ","
         << std::fixed << std::setprecision(4) << t_s << ","
         << seg.vx << "," << seg.vy << "," << seg.omega << ","
         << st_chassis.Get_Profiled_Target_Velocity_X() << ","
         << st_chassis.Get_Profiled_Target_Velocity_Y() << ","
         << st_chassis.Get_Profiled_Target_Omega() << ","
-        << (ops.valid ? 1 : 0) << ","
-        << ops.pos_x_mm << "," << ops.pos_y_mm << "," << ops.yaw_deg << ","
         << st_chassis.Get_Now_Velocity_X() << ","
         << st_chassis.Get_Now_Velocity_Y() << ","
         << st_chassis.Get_Now_Omega();
@@ -728,48 +493,6 @@ void accumulate_sample(SegmentResult &res, const Segment &cmd)
     }
 }
 
-void finish_ops_metrics(SegmentResult &res, const Options &opt)
-{
-    if (!res.ops_start.valid || !res.ops_end.valid || res.measure_dt_s <= 0.1f)
-    {
-        res.ops_valid = false;
-        return;
-    }
-
-    const float dx_m = (res.ops_end.pos_x_mm - res.ops_start.pos_x_mm) * 0.001f;
-    const float dy_m = (res.ops_end.pos_y_mm - res.ops_start.pos_y_mm) * 0.001f;
-    const float yaw0 = normalize_angle_deg(res.ops_start.yaw_deg +
-                                           opt.ops_yaw_offset_deg) * kDegToRad;
-    const float c = std::cos(yaw0);
-    const float s = std::sin(yaw0);
-
-    res.body_dx_m = c * dx_m + s * dy_m;
-    res.body_dy_m = -s * dx_m + c * dy_m;
-    res.body_vx_mps = res.body_dx_m / res.measure_dt_s;
-    res.body_vy_mps = res.body_dy_m / res.measure_dt_s;
-    res.yaw_delta_deg = normalize_angle_deg(res.ops_end.yaw_deg - res.ops_start.yaw_deg);
-    res.yaw_rate_deg_s = res.yaw_delta_deg / res.measure_dt_s;
-
-    const float cmd_norm = std::sqrt(res.segment.vx * res.segment.vx +
-                                     res.segment.vy * res.segment.vy);
-    if (cmd_norm > 1e-4f)
-    {
-        const float dir_x = res.segment.vx / cmd_norm;
-        const float dir_y = res.segment.vy / cmd_norm;
-        const float lat_x = -dir_y;
-        const float lat_y = dir_x;
-        res.along_m = res.body_dx_m * dir_x + res.body_dy_m * dir_y;
-        res.lateral_m = res.body_dx_m * lat_x + res.body_dy_m * lat_y;
-        if (std::fabs(res.along_m) > 0.02f)
-        {
-            res.lateral_mm_per_m = 1000.0f * res.lateral_m / std::fabs(res.along_m);
-            res.yaw_deg_per_m = res.yaw_delta_deg / std::fabs(res.along_m);
-        }
-    }
-
-    res.ops_valid = true;
-}
-
 SegmentResult run_segment(const Segment &seg, const Options &opt, uint32_t &tick, std::ofstream &csv)
 {
     SegmentResult res;
@@ -788,17 +511,6 @@ SegmentResult run_segment(const Segment &seg, const Options &opt, uint32_t &tick
     const int sample_div = std::max(1, 1000 / std::max(1, opt.sample_hz));
 
     Segment current_cmd = seg;
-    float yaw_target_deg = 0.0f;
-    bool yaw_target_valid = false;
-    if (opt.yaw_hold)
-    {
-        const OpsSample ops = st_ops.sample();
-        if (ops.valid)
-        {
-            yaw_target_deg = ops.yaw_deg;
-            yaw_target_valid = true;
-        }
-    }
     set_chassis_command(current_cmd.vx, current_cmd.vy, current_cmd.omega);
 
     bool measuring = false;
@@ -823,18 +535,6 @@ SegmentResult run_segment(const Segment &seg, const Options &opt, uint32_t &tick
     {
         next_wakeup += std::chrono::milliseconds(kCtrlPeriodMs);
         current_cmd = seg;
-        if (opt.yaw_hold && yaw_target_valid)
-        {
-            const OpsSample ops = st_ops.sample();
-            if (ops.valid)
-            {
-                const float yaw_error_deg = normalize_angle_deg(yaw_target_deg - ops.yaw_deg);
-                current_cmd.omega =
-                    clamp_float(opt.yaw_kp * yaw_error_deg - opt.yaw_kd * ops.omega_z_deg_s,
-                                -opt.yaw_limit_rad_s,
-                                 opt.yaw_limit_rad_s);
-            }
-        }
         set_chassis_command(current_cmd.vx, current_cmd.vy, current_cmd.omega);
 
         if (!ec_step(tick++))
@@ -890,7 +590,6 @@ SegmentResult run_segment(const Segment &seg, const Options &opt, uint32_t &tick
         {
             measuring = true;
             measured_ms = 0;
-            res.ops_start = st_ops.sample();
         }
 
         if (measuring)
@@ -906,7 +605,6 @@ SegmentResult run_segment(const Segment &seg, const Options &opt, uint32_t &tick
         {
             std::cout << "  t=" << std::fixed << std::setprecision(2)
                       << (static_cast<float>(ms) * 0.001f)
-                      << "s ops=" << (st_ops.sample().valid ? "OK" : "LOST")
                       << " odom=(" << st_chassis.Get_Now_Velocity_X()
                       << ", " << st_chassis.Get_Now_Velocity_Y()
                       << ", " << st_chassis.Get_Now_Omega() << ")\r"
@@ -923,93 +621,11 @@ SegmentResult run_segment(const Segment &seg, const Options &opt, uint32_t &tick
     }
 
     res.measure_dt_s = static_cast<float>(measured_ms) * 0.001f;
-    res.ops_end = st_ops.sample();
-    finish_ops_metrics(res, opt);
 
-    std::cout << "\n  done. ops_valid=" << (res.ops_valid ? "YES" : "NO")
-              << " frames=" << res.ops_end.frame_count
-              << " invalid=" << res.ops_end.invalid_count << "\n";
+    std::cout << "\n  done. measured_dt_s=" << res.measure_dt_s << "\n";
 
     set_chassis_command(0.0f, 0.0f, 0.0f);
     return res;
-}
-
-bool solve4(const LeastSquares4 &ls, std::array<double, 4> &x)
-{
-    double a[4][5] {};
-    for (int r = 0; r < 4; ++r)
-    {
-        for (int c = 0; c < 4; ++c)
-            a[r][c] = ls.ata[r][c];
-        a[r][4] = ls.aty[r];
-    }
-
-    for (int col = 0; col < 4; ++col)
-    {
-        int pivot = col;
-        for (int r = col + 1; r < 4; ++r)
-        {
-            if (std::fabs(a[r][col]) > std::fabs(a[pivot][col]))
-                pivot = r;
-        }
-        if (std::fabs(a[pivot][col]) < 1e-9)
-            return false;
-        if (pivot != col)
-        {
-            for (int c = col; c < 5; ++c)
-                std::swap(a[col][c], a[pivot][c]);
-        }
-
-        const double div = a[col][col];
-        for (int c = col; c < 5; ++c)
-            a[col][c] /= div;
-
-        for (int r = 0; r < 4; ++r)
-        {
-            if (r == col)
-                continue;
-            const double factor = a[r][col];
-            for (int c = col; c < 5; ++c)
-                a[r][c] -= factor * a[col][c];
-        }
-    }
-
-    for (int i = 0; i < 4; ++i)
-        x[i] = a[i][4];
-    return true;
-}
-
-void add_segment_to_scale_fit(const SegmentResult &res, LeastSquares4 &ls)
-{
-    if (!res.ops_valid)
-        return;
-
-    const double cmd_norm = std::sqrt(res.segment.vx * res.segment.vx +
-                                      res.segment.vy * res.segment.vy);
-    if (cmd_norm < 0.05 || std::fabs(res.along_m) < 0.05)
-        return;
-
-    const std::array<double, 3> y = {
-        res.body_vx_mps,
-        res.body_vy_mps,
-        res.yaw_rate_deg_s * kDegToRad,
-    };
-
-    for (int row_id = 0; row_id < 3; ++row_id)
-    {
-        std::array<double, 4> row {};
-        for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
-        {
-            const double s_i = ideal_wheel_linear(i, res.segment.vx, res.segment.vy, res.segment.omega);
-            if (row_id == 0)
-                row[i] = (-std::sin(kWheelTheta[i])) * 0.5 * s_i;
-            else if (row_id == 1)
-                row[i] = ( std::cos(kWheelTheta[i])) * 0.5 * s_i;
-            else
-                row[i] = (1.0 / (4.0 * Omni_Wheel_To_Core_Distance_Define)) * s_i;
-        }
-        ls.add_row(row, y[row_id]);
-    }
 }
 
 void write_summary(const Options &opt, const std::vector<SegmentResult> &results)
@@ -1022,11 +638,6 @@ void write_summary(const Options &opt, const std::vector<SegmentResult> &results
        << " duration_s=" << opt.duration_s
        << " settle_s=" << opt.settle_s
        << " analysis_delay_s=" << opt.analysis_delay_s
-       << " ops_yaw_offset_deg=" << opt.ops_yaw_offset_deg
-       << " yaw_hold=" << (opt.yaw_hold ? 1 : 0)
-       << " yaw_kp=" << opt.yaw_kp
-       << " yaw_kd=" << opt.yaw_kd
-       << " yaw_limit_rad_s=" << opt.yaw_limit_rad_s
        << " chassis_linear_accel_limit=" << OMNI_CHASSIS_LINEAR_ACCEL_LIMIT_M_S2
        << " chassis_linear_decel_limit=" << OMNI_CHASSIS_LINEAR_DECEL_LIMIT_M_S2
        << " chassis_ang_accel_limit=" << OMNI_CHASSIS_ANG_ACCEL_LIMIT_RAD_S2
@@ -1059,20 +670,8 @@ void write_summary(const Options &opt, const std::vector<SegmentResult> &results
         os << "  [" << r.segment.name << "] cmd=(" << r.segment.vx << ", "
            << r.segment.vy << ", " << r.segment.omega << ")"
            << " odom_mean=(" << r.odom_vx.mean() << ", "
-           << r.odom_vy.mean() << ", " << r.odom_omega.mean() << ")";
-        if (r.ops_valid)
-        {
-            os << " ops_body_delta_m=(" << r.body_dx_m << ", " << r.body_dy_m << ")"
-               << " yaw_delta_deg=" << r.yaw_delta_deg
-               << " along_m=" << r.along_m
-               << " lateral_m=" << r.lateral_m
-               << " lateral_mm_per_m=" << r.lateral_mm_per_m
-               << " yaw_deg_per_m=" << r.yaw_deg_per_m;
-        }
-        else
-        {
-            os << " ops=LOST";
-        }
+           << r.odom_vy.mean() << ", " << r.odom_omega.mean() << ")"
+           << " measure_dt_s=" << r.measure_dt_s;
         os << "\n";
 
         os << "    wheel actual/target ratio:";
@@ -1136,57 +735,10 @@ void write_summary(const Options &opt, const std::vector<SegmentResult> &results
         os << "\n";
     }
 
-    LeastSquares4 ls;
-    for (const auto &r : results)
-        add_segment_to_scale_fit(r, ls);
-
-    std::array<double, 4> scale {};
-    os << "\nWheel scale fit from OPS:\n";
-    if (ls.rows >= 8 && solve4(ls, scale))
-    {
-        double mean_scale = 0.0;
-        int positive_n = 0;
-        for (double v : scale)
-        {
-            if (std::isfinite(v) && v > 0.05)
-            {
-                mean_scale += v;
-                positive_n++;
-            }
-        }
-        mean_scale = positive_n > 0 ? mean_scale / positive_n : 1.0;
-
-        os << "  effective_scale means actual wheel contribution / ideal command.\n"
-           << "  relative_correction keeps average speed; absolute_correction also corrects speed magnitude.\n";
-        for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
-        {
-            const double current = st_chassis.wheel_params_[i].wheel_speed_correction;
-            const bool usable = std::isfinite(scale[i]) && std::fabs(scale[i]) > 0.05;
-            const double relative = usable ? current * mean_scale / scale[i] : current;
-            const double absolute = usable ? current / scale[i] : current;
-
-            os << "  W" << i
-               << " effective_scale=" << scale[i]
-               << " current_correction=" << current
-               << " suggested_relative=" << relative
-               << " suggested_absolute=" << absolute;
-            if (scale[i] < -0.05)
-                os << "  CHECK_DIRECTION_OR_INDEX";
-            os << "\n";
-        }
-    }
-    else
-    {
-        os << "  unavailable: OPS data missing or motion set is insufficient.\n";
-    }
-
     os << "\nInterpretation:\n"
-       << "  1) Large yaw_deg_per_m with omega command zero means wheel scale/index/direction asymmetry or yaw hold sign/connectivity issue.\n"
-       << "  2) Large lateral_mm_per_m with small yaw drift means wheel scale/roller geometry/floor traction asymmetry.\n"
-       << "  3) Wheel actual/target ratio far from 1 means MIT kd/friction feedforward is not tracking the commanded wheel speed.\n"
-       << "  4) startup reach_time spread shows which wheel breaks synchronization during launch.\n"
-       << "  5) abs_profile_error isolates motor tracking error after the trapezoid profile; abs_raw_error also includes the intentional ramp distance.\n"
-       << "  6) Negative effective_scale usually means that wheel direction, physical index, or CAN mapping is wrong.\n";
+       << "  1) Wheel actual/target ratio far from 1 means MIT kd/friction feedforward is not tracking the commanded wheel speed.\n"
+       << "  2) startup reach_time spread shows which wheel breaks synchronization during launch.\n"
+       << "  3) abs_profile_error isolates motor tracking error after the trapezoid profile; abs_raw_error also includes the intentional ramp distance.\n";
 
     if (out.is_open())
         std::cout << "[OMNI-REC] summary written to " << opt.summary_path << "\n";
@@ -1271,22 +823,6 @@ Options parse_options(int argc, char **argv)
         cli_get(argc, argv, "analysis-delay",
                 std::to_string(env_f("OMNI_REC_ANALYSIS_DELAY", opt.analysis_delay_s)).c_str()),
         nullptr);
-    opt.ops_yaw_offset_deg = std::strtof(
-        cli_get(argc, argv, "ops-yaw-offset-deg",
-                std::to_string(env_f("OMNI_REC_OPS_YAW_OFFSET_DEG", opt.ops_yaw_offset_deg)).c_str()),
-        nullptr);
-    opt.yaw_hold = std::atoi(cli_get(argc, argv, "yaw-hold",
-                                     std::to_string(env_i("OMNI_REC_YAW_HOLD", opt.yaw_hold ? 1 : 0)).c_str())) != 0;
-    opt.yaw_kp = std::strtof(cli_get(argc, argv, "yaw-kp",
-                                     std::to_string(env_f("OMNI_REC_YAW_KP", opt.yaw_kp)).c_str()),
-                             nullptr);
-    opt.yaw_kd = std::strtof(cli_get(argc, argv, "yaw-kd",
-                                     std::to_string(env_f("OMNI_REC_YAW_KD", opt.yaw_kd)).c_str()),
-                             nullptr);
-    opt.yaw_limit_rad_s = std::strtof(
-        cli_get(argc, argv, "yaw-limit",
-                std::to_string(env_f("OMNI_REC_YAW_LIMIT", opt.yaw_limit_rad_s)).c_str()),
-        nullptr);
     opt.startup_window_s = std::strtof(
         cli_get(argc, argv, "startup-window",
                 std::to_string(env_f("OMNI_REC_STARTUP_WINDOW", opt.startup_window_s)).c_str()),
@@ -1349,7 +885,6 @@ int main(int argc, char **argv)
               << "s reach=" << opt.reach_frac
               << " or abs_tol=" << opt.reach_abs_tol
               << " hold=" << opt.reach_hold_s << "s\n"
-              << "  yaw_hold : " << (opt.yaw_hold ? "ON" : "OFF") << "\n"
               << "  output   : " << opt.csv_path << "\n"
               << "===============================================\n"
               << "[SAFETY] Put the chassis on clear flat ground. Keep hands away from wheels.\n"

@@ -92,8 +92,8 @@ flowchart LR
     D --> G[vehicle_control 订阅 ROS 指令]
     F --> G
     G --> H[robot/task 顶层调度]
-    H --> I[chassis/lift/navigation]
-    I --> J[Motor/OPS/LinkX 设备层]
+    H --> I[chassis/lift]
+    I --> J[Motor/LinkX 设备层]
     J --> K[SOEM EtherCAT 周期帧]
     K --> L[LinkX-4C]
     L --> M[CAN1~CAN4]
@@ -154,8 +154,8 @@ Ethercat-R2/
         │   ├── vehicle_control/        # 整车主控可执行
         │   │   ├── main.cpp
         │   │   ├── 1_Middleware/       # SOEM / LinkX / Algorithm(PID, ramp)
-        │   │   ├── 2_Device/           # Ethercat / Motor / OPS / rt_timing
-        │   │   ├── 3_Chariot/          # chassis / lift / navigation
+        │   │   ├── 2_Device/           # Ethercat / Motor / rt_timing
+        │   │   ├── 3_Chariot/          # chassis / lift
         │   │   ├── 4_Interaction/      # robot
         │   │   └── 5_Task/             # task 顶层调度
         │   ├── remote/                 # 手柄解算 + 串口/话题转发
@@ -172,7 +172,7 @@ Ethercat-R2/
 | 层级 | 责任 | 典型内容 |
 | --- | --- | --- |
 | `1_Middleware` | 第三方/底层通信与通用算法 | SOEM、LinkX 协议、PID、ramp、数学工具 |
-| `2_Device` | 单设备驱动与 EtherCAT 管理 | `Ethercat/ecat_manager`、`linkx4c_handler`、DM 电机、OPS、实时计时 |
+| `2_Device` | 单设备驱动与 EtherCAT 管理 | `Ethercat/ecat_manager`、`linkx4c_handler`、DM 电机、实时计时 |
 | `3_Chariot` | 机构级控制 | 全向/舵轮底盘、升降、导航接口 |
 | `4_Interaction` | 机器人交互封装 | `robot` 对 ROS 话题和机构状态的整合 |
 | `5_Task` | 顶层任务调度 | 初始化顺序、周期任务、状态流转 |
@@ -299,7 +299,7 @@ joy_node ──► /joy ──► remote_node ──► /chassis/remote_cmd_vel 
 
 | 可执行 | 用途 |
 | --- | --- |
-| `linkx_soem_demo` | **整车主控**:SOEM 主站 + LinkX-4C CAN 桥 + chassis/lift/navigation 调度 |
+| `linkx_soem_demo` | **整车主控**:SOEM 主站 + LinkX-4C CAN 桥 + chassis/lift 调度 |
 | `remote_node_cpp` | 手柄解算:`/joy` → `/chassis/remote_cmd_vel` + `/robot_buttons` |
 | `topic_relay_cpp` | 通用话题转发(参数化输入/输出话题,可复用做 chassis_relay / gimbal_relay) |
 

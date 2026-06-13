@@ -44,16 +44,23 @@ set -u
 
 echo "[SETUP] Building workspace (colcon)..."
 COLCON_CACHE_ARGS=()
-CMAKE_CACHE_FILE="${WS_DIR}/build/linkx_soem_demo/CMakeCache.txt"
-if [[ -f "${CMAKE_CACHE_FILE}" ]]; then
+CMAKE_CACHE_FILES=("${WS_DIR}"/build/*/CMakeCache.txt)
+for CMAKE_CACHE_FILE in "${CMAKE_CACHE_FILES[@]}"; do
+    [[ -f "${CMAKE_CACHE_FILE}" ]] || continue
     if grep -q '^CMAKE_INSTALL_PREFIX:PATH=/usr/local$' "${CMAKE_CACHE_FILE}"; then
-        echo "[SETUP] stale CMake cache uses /usr/local install prefix; cleaning package cache..."
+        echo "[SETUP] stale CMake cache uses /usr/local install prefix: ${CMAKE_CACHE_FILE}"
         COLCON_CACHE_ARGS+=(--cmake-clean-cache)
-    elif ! grep -q '^CMAKE_C_COMPILER:.*=/usr/bin/gcc$' "${CMAKE_CACHE_FILE}" ||
-         ! grep -q '^CMAKE_CXX_COMPILER:.*=/usr/bin/g++$' "${CMAKE_CACHE_FILE}"; then
-        echo "[SETUP] compiler in CMake cache changed; cleaning package cache..."
-        COLCON_CACHE_ARGS+=(--cmake-clean-cache)
+        break
     fi
+    if ! grep -q '^CMAKE_C_COMPILER:.*=/usr/bin/gcc$' "${CMAKE_CACHE_FILE}" ||
+       ! grep -q '^CMAKE_CXX_COMPILER:.*=/usr/bin/g++$' "${CMAKE_CACHE_FILE}"; then
+        echo "[SETUP] compiler in CMake cache changed: ${CMAKE_CACHE_FILE}"
+        COLCON_CACHE_ARGS+=(--cmake-clean-cache)
+        break
+    fi
+done
+if [[ ${#COLCON_CACHE_ARGS[@]} -gt 0 ]]; then
+    echo "[SETUP] cleaning CMake package caches before build..."
 fi
 
 CC=/usr/bin/gcc CXX=/usr/bin/g++ \
@@ -100,7 +107,7 @@ if [[ "${START_VEHICLE}" == "true" ]]; then
     mkdir -p var_data
     if [[ ! -w var_data ]]; then
         if [[ "${USE_SUDO}" == "true" ]]; then
-            echo "[SETUP] fixing var_data ownership for terminal feedback..."
+            echo "[SETUP] fixing var_data ownership for runtime logs..."
             sudo chown -R "$(id -u):$(id -g)" var_data
         else
             echo "[ERROR] var_data is not writable. Run: sudo chown -R $(id -u):$(id -g) var_data" >&2
@@ -108,7 +115,7 @@ if [[ "${START_VEHICLE}" == "true" ]]; then
         fi
     fi
     : > var_data/ops_terminal.log
-    echo "[MONITOR] tailing OPS feedback: var_data/ops_terminal.log"
+    echo "[MONITOR] tailing ToF feedback: var_data/ops_terminal.log"
     tail -n 0 -F var_data/ops_terminal.log &
     TAIL_PID="$!"
     trap 'if [[ -n "${TAIL_PID}" ]]; then kill "${TAIL_PID}" >/dev/null 2>&1 || true; fi' EXIT INT TERM

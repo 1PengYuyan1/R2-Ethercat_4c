@@ -4,6 +4,8 @@ from launch.conditions import IfCondition
 from launch.logging import launch_config
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from ament_index_python.packages import get_package_share_directory
+import os
 import logging
 
 
@@ -15,6 +17,11 @@ def generate_launch_description():
     start_gimbal_bridge = LaunchConfiguration('start_gimbal_bridge')
     vehicle_prefix = LaunchConfiguration('vehicle_prefix')
     ros_nodes_prefix = LaunchConfiguration('ros_nodes_prefix')
+    start_imu = LaunchConfiguration('start_imu')
+
+    imu_config = os.path.join(
+        get_package_share_directory('hipnuc_imu'),
+        'config', 'hipnuc_config.yaml')
 
     return LaunchDescription([
         DeclareLaunchArgument('ifname', default_value='enp86s0'),
@@ -22,6 +29,19 @@ def generate_launch_description():
         DeclareLaunchArgument('start_gimbal_bridge', default_value='false'),
         DeclareLaunchArgument('vehicle_prefix', default_value=''),
         DeclareLaunchArgument('ros_nodes_prefix', default_value=''),
+        DeclareLaunchArgument('start_imu', default_value='true'),
+
+        # 0) IMU 发布节点（HiPNUC → /IMU_data, sensor_msgs/Imu, best_effort）
+        #    供主控 vehicle_control 订阅做航向保持纠偏；listener demo 不启动
+        Node(
+            package='hipnuc_imu',
+            executable='talker',
+            name='IMU_publisher',
+            output='screen',
+            condition=IfCondition(start_imu),
+            parameters=[imu_config],
+            arguments=['--ros-args', '--log-level', 'WARN'],
+        ),
 
         # 1) 手柄驱动
         Node(
@@ -82,7 +102,7 @@ def generate_launch_description():
             }],
         ),
 
-        # 5) 整车主控（SOEM/EtherCAT 主站 + LinkX-4C CAN 桥 + r2 chassis/lift/navigation）
+        # 5) 整车主控（SOEM/EtherCAT 主站 + LinkX-4C CAN 桥 + r2 chassis/lift）
         #    需要 raw 以太网权限：vehicle_prefix='sudo -E env LD_LIBRARY_PATH=$LD_LIBRARY_PATH'
         #    或预先 setcap cap_net_raw,cap_net_admin+ep <linkx_soem_demo>
         Node(

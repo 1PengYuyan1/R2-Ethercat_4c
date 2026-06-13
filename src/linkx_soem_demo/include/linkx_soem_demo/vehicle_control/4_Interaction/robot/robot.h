@@ -4,13 +4,14 @@
 // 上位机版机器人编排器 (Class_Robot)：
 //   - 串口/EtherCAT 控制：通过 linkx_t 句柄经 LinkX-4C → CAN → DM 电机
 //   - ROS 接口：订阅 /chassis/cmd_vel(高优先级) + /chassis/remote_cmd_vel(遥控)
-//              + /chassis/buttons + /imu，发布 /chassis/odom_twist
+//              + /chassis/buttons，IMU 航向保持模块订阅 /IMU_data，发布 /chassis/odom_twist
 //   - 周期：每 1 ms 由 task.cpp 调用 TIM_1ms_Calculate_Callback / Loop / CAN_Rx_Callback
 
 #include "crt_chassis_omni.h"
+#include "crt_gripper.h"
 #include "crt_lift.h"
-#include "crt_navigation.h"
-#include "dvc_ops.h"
+#include "dvc_motor_dm.h"
+#include "imu_heading_hold/imu_heading_hold.h"
 #include "linkx_soem_demo/remote/device/dvc_logF710.h"
 
 #include <atomic>
@@ -22,15 +23,22 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist.hpp>
-#include <sensor_msgs/msg/imu.hpp>
 #include <std_msgs/msg/u_int16.hpp>
 
 class Class_Robot {
 public:
+    struct ButtonSnapshot {
+        uint16_t code = LogF710_Key_IDLE;
+        bool has_buttons = false;
+        bool recent = false;
+        int64_t age_ms = -1;
+        int64_t last_button_ns = 0;
+    };
+
     Class_Chassis_Omni Chassis;
     Class_Chariot_Lift Lift;
-    Class_Navigation   Navigation;
-    Class_OPS          ops;
+    Class_Chariot_Gripper Gripper;
+    Class_Motor_DM_Normal Auxiliary_Motor;
 
     void Init(linkx_t *__LinkX_Handler);
     void Loop();
@@ -42,12 +50,23 @@ public:
 
     void Start_ROS2_Bridge();
     void Stop_ROS2_Bridge();
+    ButtonSnapshot Get_Button_Snapshot();
 
 protected:
     enum class ChassisCommandSource {
         NONE,
         ROS2,
         REMOTE
+    };
+
+    enum class LiftAuxSequenceState {
+        IDLE,
+        RAISE_WAIT_LIFT_REACHED,
+        RAISE_MOVE_AUXILIARY,
+        RAISE_DONE,
+        HOME_WAIT_LIFT_REACHED,
+        HOME_MOVE_AUXILIARY,
+        HOME_DONE,
     };
 
     struct Velocity_Command {
@@ -73,7 +92,6 @@ protected:
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr             sub_cmd_;
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr             sub_remote_cmd_;
     rclcpp::Subscription<std_msgs::msg::UInt16>::SharedPtr                 sub_buttons_;
-    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr                 sub_imu_;
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr                pub_odom_;
     std::thread                                                            ros_spin_thread_;
     std::atomic<bool>                                                      ros_bridge_running_{false};
@@ -81,7 +99,7 @@ protected:
 
     std::mutex                                                             cmd_mtx_;
     Ros_Command                                                            ros_cmd_;
-    std::atomic<float>                                                     latest_imu_omega_z_{0.0f};
+    Class_Chariot_Imu_Heading_Hold                                         imu_heading_hold_;
 
     int         odom_pub_divider_     = 0;
 
@@ -91,36 +109,35 @@ protected:
     uint16_t last_chassis_button_code_   = LogF710_Key_IDLE;
     uint16_t last_chassis_rx_button_code_ = 0xFFFFU;
     uint16_t last_lift_button_code_      = LogF710_Key_IDLE;
+    uint16_t last_gripper_button_code_   = LogF710_Key_IDLE;
     int64_t last_chassis_diag_ns_        = 0;
-    bool    ops_yaw_hold_active_         = false;
-    float   ops_yaw_hold_target_         = 0.0f;  // deg
-    float   ops_yaw_hold_last_output_    = 0.0f;
-    float   ops_yaw_hold_last_error_     = 0.0f;  // deg
-    bool    ops_lateral_hold_active_     = false;
-    float   ops_lateral_hold_yaw_target_ = 0.0f;  // deg
-    float   ops_lateral_hold_start_x_    = 0.0f;
-    float   ops_lateral_hold_start_y_    = 0.0f;
-    float   ops_lateral_hold_body_dir_x_ = 1.0f;
-    float   ops_lateral_hold_body_dir_y_ = 0.0f;
-    float   ops_lateral_hold_last_error_mm_ = 0.0f;
-    float   ops_lateral_hold_last_output_   = 0.0f;
+    LiftAuxSequenceState lift_aux_sequence_state_ = LiftAuxSequenceState::IDLE;
+    float auxiliary_motor_target_angle_ = 0.0f;
+    bool auxiliary_motor_command_enable_ = false;
 
     // 诊断：被 CAN_Rx_Callback 丢弃的未识别帧累计（通道/ID 都不匹配）
     std::atomic<uint64_t> unhandled_can_frames_{0};
 
     void _Chassis_Control();
     void _Lift_Control();
+    void _Gripper_Control(bool buttons_recent, uint16_t button_code);
     void _Send_Odometry();
-    void _Apply_OPS_Lateral_Correction(float &vx, float &vy, float omega_cmd);
-    float _Apply_OPS_Yaw_Hold(float vx, float vy, float omega_cmd);
-    void _Reset_OPS_Lateral_Hold();
     void _ROS2_Spin_Loop();
     void _Update_Twist(Velocity_Command &target, float vx, float vy, float omega, float right_y);
     void _Update_Ros_Twist(float vx, float vy, float omega, float right_y);
     void _Update_Remote_Twist(float vx, float vy, float omega, float right_y);
     void _Update_Button_Code(uint16_t button_code);
     void _Update_Chassis_Remote_Gate(bool buttons_recent, uint16_t button_code);
+    void _Enable_Auxiliary_Motor();
+    void _Disable_Auxiliary_Motor();
+    void _Cancel_Lift_Aux_Sequence();
+    void _Start_Lift_Aux_Raise_Sequence();
+    void _Start_Lift_Aux_Home_Sequence();
+    void _Update_Lift_Aux_Sequence();
+    void _Output_Auxiliary_Motor();
+    bool _Is_Auxiliary_Motor_Reached(float target_angle);
     void _Log_Chassis_Start_Gate(const char *msg);
+    void _Log_Gripper_Action(const char *msg, bool ok);
     void _Log_Chassis_Diagnostic(bool ros_cmd_recent,
                                  bool remote_cmd_recent,
                                  ChassisCommandSource source);

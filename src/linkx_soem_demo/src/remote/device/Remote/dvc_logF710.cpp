@@ -132,7 +132,8 @@ uint16_t Class_LogF710::Resolve_Button_Code(const std::vector<float> &axes, cons
     const bool dinput_like = Is_DInput_Layout(axes, buttons);
     const bool xinput_like = Is_XInput_Layout(axes, buttons);
 
-    // 与单片机端 Resolve_Key_Status 一致：返回单个键值码，不做位组合
+    // 与单片机端 Resolve_Key_Status 一致：默认返回单个键值码；
+    // 对需要独立动作的功能组合键优先返回组合编码。
     if (dinput_like)
     {
         if (Is_Button_Pressed(buttons, 8U)) return LogF710_Key_Back;
@@ -150,11 +151,15 @@ uint16_t Class_LogF710::Resolve_Button_Code(const std::vector<float> &axes, cons
         if (Is_Button_Pressed(buttons, 9U)) return LogF710_Key_Start;
     }
 
+    const bool lb_pressed = Is_Button_Pressed(buttons, 4U);
+    if (lb_pressed && Is_Button_Pressed(buttons, 2U)) return LogF710_Key_LB_X;
+    if (lb_pressed && Is_Button_Pressed(buttons, 3U)) return LogF710_Key_LB_Y;
+
     if (Is_Button_Pressed(buttons, 2U)) return LogF710_Key_X;
     if (Is_Button_Pressed(buttons, 3U)) return LogF710_Key_Y;
     if (Is_Button_Pressed(buttons, 0U)) return LogF710_Key_A;
     if (Is_Button_Pressed(buttons, 1U)) return LogF710_Key_B;
-    if (Is_Button_Pressed(buttons, 4U)) return LogF710_Key_LB;
+    if (lb_pressed) return LogF710_Key_LB;
     if (Is_Button_Pressed(buttons, 5U)) return LogF710_Key_RB;
     if (dinput_like)
     {
