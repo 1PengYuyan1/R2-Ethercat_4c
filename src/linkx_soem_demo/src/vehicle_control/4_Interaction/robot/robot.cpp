@@ -32,7 +32,7 @@ constexpr const char *kRemoteCmdTopic = "/chassis/remote_cmd_vel";
 constexpr float kManualBothLiftMotorRaiseAngle = -39.0f;
 constexpr float kManualBothLiftRetractAngle = -0.01f;
 constexpr float kAuxiliaryMotorRaisedAngle = 1.5f;
-constexpr float kAuxiliaryMotorHomeAngle = 0.227f;
+constexpr float kAuxiliaryMotorHomeAngle = 0.1f;
 constexpr float kAuxiliaryMotorReachedTolerance = 0.05f;
 constexpr float kAuxiliaryMotorKp = 20.0f;
 constexpr float kAuxiliaryMotorKd = 1.2f;
@@ -405,7 +405,7 @@ void Class_Robot::_Execute_High_Priority_Action(HighPriorityAction action)
         case HighPriorityAction::LIFT_AUX_HOME:
             _Enable_Vehicle_Control("service action: vehicle enabled for lift+aux home");
             _Start_Lift_Aux_Home_Sequence();
-            _Log_Chassis_Start_Gate("service /vehicle/lift_aux/home: aux 0x07 target=0.227, then lift target=-0.01");
+            _Log_Chassis_Start_Gate("service /vehicle/lift_aux/home: aux 0x07 target=0.1, then lift target=-0.01");
             break;
 
         case HighPriorityAction::GRIPPER_GRAB: {
@@ -924,7 +924,7 @@ void Class_Robot::_Lift_Control()
         else if (up_rising)
         {
             _Start_Lift_Aux_Home_Sequence();
-            log_lift_action("Up pressed: aux 0x07 target=0.227, then lift target=-0.01");
+            log_lift_action("Up pressed: aux 0x07 target=0.1, then lift target=-0.01");
         }
         else if (down_rising)
         {
