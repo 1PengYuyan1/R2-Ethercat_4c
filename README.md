@@ -349,6 +349,23 @@ joy_node ──► /joy ──► remote_node ──► /chassis/remote_cmd_vel 
 
 > 任何外部规划/导航节点可以发布 `/cmd_vel` 经 relay 进入主控,或绕过 relay 直接发布 `/chassis/cmd_vel`。只要该高优先级速度在 200ms 内更新,主控就会覆盖遥控速度；超时后才回落到 `/chassis/remote_cmd_vel`。
 
+## 服务约定
+
+整车主控提供以下 `std_srvs/srv/Trigger` 服务。服务动作会进入主控内部高优先级队列,优先于遥控按键执行；整车使能后,底盘速度仍按 `/chassis/cmd_vel` 高于 `/chassis/remote_cmd_vel` 仲裁。整车失能后速度入口不再驱动底盘,需要重新调用 `/vehicle/enable` 或按 START。
+
+| 服务 | 动作 |
+| --- | --- |
+| `/vehicle/enable` | 整车使能,等价 START: 使能底盘/升降/辅助 `0x07` |
+| `/vehicle/disable` | 整车失能,等价 BACK: 停止底盘/升降/辅助 `0x07` |
+| `/vehicle/stair/up_raise_8_0` | `-8.0` 角度上台阶 |
+| `/vehicle/stair/down_raise_8_0` | `-8.0` 角度下台阶 |
+| `/vehicle/stair/up_raise_14_3` | `-14.3` 角度上台阶 |
+| `/vehicle/stair/down_raise_14_3` | `-14.3` 角度下台阶 |
+| `/vehicle/lift_aux/raise` | 两侧升降到电机角 `-39.0`,再将辅助 `0x07` 控到 `1.5` |
+| `/vehicle/lift_aux/home` | 先将辅助 `0x07` 控到 `0.227`,再将升降收到 `-0.01` |
+| `/vehicle/gripper/grab` | 向夹爪/下位机发送 `0x01` |
+| `/vehicle/gripper/release` | 向夹爪/下位机发送 `0x02` |
+
 速度指令约定:
 
 - `/cmd_vel.linear.x` / `/chassis/cmd_vel.linear.x`:底盘前后速度。

@@ -17,12 +17,14 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <thread>
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <std_msgs/msg/u_int16.hpp>
 
 class Class_Robot {
@@ -69,6 +71,19 @@ protected:
         HOME_DONE,
     };
 
+    enum class HighPriorityAction {
+        VEHICLE_ENABLE,
+        VEHICLE_DISABLE,
+        STAIR_UP_RAISE_8_0,
+        STAIR_DOWN_RAISE_8_0,
+        STAIR_UP_RAISE_14_3,
+        STAIR_DOWN_RAISE_14_3,
+        LIFT_AUX_RAISE,
+        LIFT_AUX_HOME,
+        GRIPPER_GRAB,
+        GRIPPER_RELEASE,
+    };
+
     struct Velocity_Command {
         float    vx            = 0.0f;
         float    vy            = 0.0f;
@@ -93,12 +108,23 @@ protected:
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr             sub_remote_cmd_;
     rclcpp::Subscription<std_msgs::msg::UInt16>::SharedPtr                 sub_buttons_;
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr                pub_odom_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr                     srv_vehicle_enable_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr                     srv_vehicle_disable_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr                     srv_stair_up_raise_8_0_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr                     srv_stair_down_raise_8_0_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr                     srv_stair_up_raise_14_3_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr                     srv_stair_down_raise_14_3_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr                     srv_lift_aux_raise_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr                     srv_lift_aux_home_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr                     srv_gripper_grab_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr                     srv_gripper_release_;
     std::thread                                                            ros_spin_thread_;
     std::atomic<bool>                                                      ros_bridge_running_{false};
     bool                                                                   ros_initialized_here_ = false;
 
     std::mutex                                                             cmd_mtx_;
     Ros_Command                                                            ros_cmd_;
+    std::deque<HighPriorityAction>                                         high_priority_actions_;
     Class_Chariot_Imu_Heading_Hold                                         imu_heading_hold_;
 
     int         odom_pub_divider_     = 0;
@@ -111,6 +137,7 @@ protected:
     uint16_t last_lift_button_code_      = LogF710_Key_IDLE;
     uint16_t last_gripper_button_code_   = LogF710_Key_IDLE;
     int64_t last_chassis_diag_ns_        = 0;
+    bool suppress_remote_buttons_this_tick_ = false;
     LiftAuxSequenceState lift_aux_sequence_state_ = LiftAuxSequenceState::IDLE;
     float auxiliary_motor_target_angle_ = 0.0f;
     bool auxiliary_motor_command_enable_ = false;
@@ -123,6 +150,12 @@ protected:
     void _Gripper_Control(bool buttons_recent, uint16_t button_code);
     void _Send_Odometry();
     void _ROS2_Spin_Loop();
+    void _Register_Action_Services();
+    bool _Enqueue_High_Priority_Action(HighPriorityAction action, const char *name);
+    bool _Process_High_Priority_Actions();
+    void _Execute_High_Priority_Action(HighPriorityAction action);
+    void _Enable_Vehicle_Control(const char *reason);
+    void _Disable_Vehicle_Control(const char *reason);
     void _Update_Twist(Velocity_Command &target, float vx, float vy, float omega, float right_y);
     void _Update_Ros_Twist(float vx, float vy, float omega, float right_y);
     void _Update_Remote_Twist(float vx, float vy, float omega, float right_y);

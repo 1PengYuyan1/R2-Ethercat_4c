@@ -19,7 +19,9 @@
 #include "robot.h"
 
 #include <cmath>
+#include <cstddef>
 #include <iostream>
+#include <string>
 
 namespace
 {
@@ -37,6 +39,7 @@ constexpr float kAuxiliaryMotorKd = 1.2f;
 constexpr uint8_t kAuxiliaryMotorCanChannel = 0U;
 constexpr uint8_t kAuxiliaryMotorRxId = 0x17U;
 constexpr uint8_t kAuxiliaryMotorTxId = 0x07U;
+constexpr size_t kHighPriorityActionQueueMax = 16U;
 }
 
 void Class_Robot::Init(linkx_t *__LinkX_Handler)
@@ -128,9 +131,11 @@ void Class_Robot::TIM_2ms_Calculate_PeriodElapsedCallback()
 
 void Class_Robot::TIM_1ms_Calculate_Callback()
 {
+    suppress_remote_buttons_this_tick_ = _Process_High_Priority_Actions();
     _Chassis_Control();
     _Lift_Control();
     _Send_Odometry();
+    suppress_remote_buttons_this_tick_ = false;
 }
 
 // --- ROS 桥 ----------------------------------------------------------------
@@ -176,9 +181,10 @@ void Class_Robot::Start_ROS2_Bridge()
     imu_heading_hold_.Start(bridge_node_);
 
     pub_odom_ = bridge_node_->create_publisher<geometry_msgs::msg::Twist>("/chassis/odom_twist", 50);
+    _Register_Action_Services();
 
     RCLCPP_INFO(bridge_node_->get_logger(),
-                "chassis command priority: ROS2 %s > remote %s",
+                "command priority: action services > ROS2 %s > remote %s",
                 kRosCmdTopic,
                 kRemoteCmdTopic);
 
@@ -192,6 +198,16 @@ void Class_Robot::Stop_ROS2_Bridge()
     ros_bridge_running_.store(false);
     if (ros_spin_thread_.joinable()) ros_spin_thread_.join();
 
+    srv_gripper_release_.reset();
+    srv_gripper_grab_.reset();
+    srv_lift_aux_home_.reset();
+    srv_lift_aux_raise_.reset();
+    srv_stair_down_raise_14_3_.reset();
+    srv_stair_up_raise_14_3_.reset();
+    srv_stair_down_raise_8_0_.reset();
+    srv_stair_up_raise_8_0_.reset();
+    srv_vehicle_disable_.reset();
+    srv_vehicle_enable_.reset();
     pub_odom_.reset();
     imu_heading_hold_.Stop();
     sub_buttons_.reset();
@@ -213,6 +229,200 @@ void Class_Robot::_ROS2_Spin_Loop()
     {
         rclcpp::spin_some(bridge_node_);
         rate.sleep();
+    }
+}
+
+void Class_Robot::_Register_Action_Services()
+{
+    if (!bridge_node_)
+        return;
+
+    auto make_trigger_service =
+        [this](const char *service_name, HighPriorityAction action)
+        -> rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr
+        {
+            return bridge_node_->create_service<std_srvs::srv::Trigger>(
+                service_name,
+                [this, action, service_name](
+                    const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                    std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+                {
+                    (void)request;
+                    const bool queued = _Enqueue_High_Priority_Action(action, service_name);
+                    response->success = queued;
+                    response->message = queued ?
+                        (std::string("accepted: ") + service_name) :
+                        (std::string("rejected, action queue full: ") + service_name);
+                });
+        };
+
+    srv_vehicle_enable_ =
+        make_trigger_service("/vehicle/enable", HighPriorityAction::VEHICLE_ENABLE);
+    srv_vehicle_disable_ =
+        make_trigger_service("/vehicle/disable", HighPriorityAction::VEHICLE_DISABLE);
+    srv_stair_up_raise_8_0_ =
+        make_trigger_service("/vehicle/stair/up_raise_8_0",
+                             HighPriorityAction::STAIR_UP_RAISE_8_0);
+    srv_stair_down_raise_8_0_ =
+        make_trigger_service("/vehicle/stair/down_raise_8_0",
+                             HighPriorityAction::STAIR_DOWN_RAISE_8_0);
+    srv_stair_up_raise_14_3_ =
+        make_trigger_service("/vehicle/stair/up_raise_14_3",
+                             HighPriorityAction::STAIR_UP_RAISE_14_3);
+    srv_stair_down_raise_14_3_ =
+        make_trigger_service("/vehicle/stair/down_raise_14_3",
+                             HighPriorityAction::STAIR_DOWN_RAISE_14_3);
+    srv_lift_aux_raise_ =
+        make_trigger_service("/vehicle/lift_aux/raise", HighPriorityAction::LIFT_AUX_RAISE);
+    srv_lift_aux_home_ =
+        make_trigger_service("/vehicle/lift_aux/home", HighPriorityAction::LIFT_AUX_HOME);
+    srv_gripper_grab_ =
+        make_trigger_service("/vehicle/gripper/grab", HighPriorityAction::GRIPPER_GRAB);
+    srv_gripper_release_ =
+        make_trigger_service("/vehicle/gripper/release", HighPriorityAction::GRIPPER_RELEASE);
+}
+
+bool Class_Robot::_Enqueue_High_Priority_Action(HighPriorityAction action, const char *name)
+{
+    std::lock_guard<std::mutex> lock(cmd_mtx_);
+    if (high_priority_actions_.size() >= kHighPriorityActionQueueMax)
+    {
+        if (bridge_node_)
+        {
+            RCLCPP_ERROR(bridge_node_->get_logger(),
+                         "high-priority action queue full, reject %s",
+                         name);
+        }
+        return false;
+    }
+
+    high_priority_actions_.push_back(action);
+    if (bridge_node_)
+    {
+        RCLCPP_WARN(bridge_node_->get_logger(),
+                    "high-priority action queued: %s",
+                    name);
+    }
+    return true;
+}
+
+bool Class_Robot::_Process_High_Priority_Actions()
+{
+    std::deque<HighPriorityAction> actions;
+    {
+        std::lock_guard<std::mutex> lock(cmd_mtx_);
+        actions.swap(high_priority_actions_);
+    }
+
+    const bool had_actions = !actions.empty();
+    while (!actions.empty())
+    {
+        _Execute_High_Priority_Action(actions.front());
+        actions.pop_front();
+    }
+
+    return had_actions;
+}
+
+void Class_Robot::_Enable_Vehicle_Control(const char *reason)
+{
+    chassis_remote_enabled_ = true;
+    Lift.Set_Control_Type(CHARIOT_LIFT_CONTROL_ENABLE);
+    Lift.Send_Enable_Burst();
+    _Enable_Auxiliary_Motor();
+    _Log_Chassis_Start_Gate(reason);
+}
+
+void Class_Robot::_Disable_Vehicle_Control(const char *reason)
+{
+    chassis_remote_enabled_ = false;
+    _Cancel_Lift_Aux_Sequence();
+    Lift.Stop_Stair_Auto();
+    Lift.Set_Diff_Drive_Enable(false);
+    Lift.Set_Target_Diff_Command(0.0f, 0.0f);
+    Lift.Set_Control_Type(CHARIOT_LIFT_CONTROL_DISABLE);
+    Chassis.Set_Chassis_Control_Type(Chassis_Omni_Control_Type_DISABLE);
+    Chassis.Set_Target_Velocity_X(0.0f);
+    Chassis.Set_Target_Velocity_Y(0.0f);
+    Chassis.Set_Target_Omega(0.0f);
+    _Disable_Auxiliary_Motor();
+
+    {
+        std::lock_guard<std::mutex> lock(cmd_mtx_);
+        ros_cmd_.ros_twist = Velocity_Command{};
+        ros_cmd_.remote_twist = Velocity_Command{};
+    }
+
+    _Log_Chassis_Start_Gate(reason);
+}
+
+void Class_Robot::_Execute_High_Priority_Action(HighPriorityAction action)
+{
+    switch (action)
+    {
+        case HighPriorityAction::VEHICLE_ENABLE:
+            _Enable_Vehicle_Control("service /vehicle/enable: vehicle ENABLED");
+            break;
+
+        case HighPriorityAction::VEHICLE_DISABLE:
+            _Disable_Vehicle_Control("service /vehicle/disable: vehicle DISABLED");
+            break;
+
+        case HighPriorityAction::STAIR_UP_RAISE_8_0:
+            _Enable_Vehicle_Control("service action: vehicle enabled for stair UP raise_angle=-8.0");
+            _Cancel_Lift_Aux_Sequence();
+            Lift.Start_Stair_Up(-8.0f);
+            _Log_Chassis_Start_Gate("service /vehicle/stair/up_raise_8_0: stair UP auto start");
+            break;
+
+        case HighPriorityAction::STAIR_DOWN_RAISE_8_0:
+            _Enable_Vehicle_Control("service action: vehicle enabled for stair DOWN raise_angle=-8.0");
+            _Cancel_Lift_Aux_Sequence();
+            Lift.Start_Stair_Down(-8.0f);
+            _Log_Chassis_Start_Gate("service /vehicle/stair/down_raise_8_0: stair DOWN auto start");
+            break;
+
+        case HighPriorityAction::STAIR_UP_RAISE_14_3:
+            _Enable_Vehicle_Control("service action: vehicle enabled for stair UP raise_angle=-14.3");
+            _Cancel_Lift_Aux_Sequence();
+            Lift.Start_Stair_Up(-14.3f);
+            _Log_Chassis_Start_Gate("service /vehicle/stair/up_raise_14_3: stair UP auto start");
+            break;
+
+        case HighPriorityAction::STAIR_DOWN_RAISE_14_3:
+            _Enable_Vehicle_Control("service action: vehicle enabled for stair DOWN raise_angle=-14.3");
+            _Cancel_Lift_Aux_Sequence();
+            Lift.Start_Stair_Down(-14.3f);
+            _Log_Chassis_Start_Gate("service /vehicle/stair/down_raise_14_3: stair DOWN auto start");
+            break;
+
+        case HighPriorityAction::LIFT_AUX_RAISE:
+            _Enable_Vehicle_Control("service action: vehicle enabled for lift+aux raise");
+            _Start_Lift_Aux_Raise_Sequence();
+            _Log_Chassis_Start_Gate("service /vehicle/lift_aux/raise: lift target=-39.0, then aux 0x07 target=1.5");
+            break;
+
+        case HighPriorityAction::LIFT_AUX_HOME:
+            _Enable_Vehicle_Control("service action: vehicle enabled for lift+aux home");
+            _Start_Lift_Aux_Home_Sequence();
+            _Log_Chassis_Start_Gate("service /vehicle/lift_aux/home: aux 0x07 target=0.227, then lift target=-0.01");
+            break;
+
+        case HighPriorityAction::GRIPPER_GRAB: {
+            const bool ok = Gripper.Grab();
+            _Log_Gripper_Action(ok ? "service /vehicle/gripper/grab: gripper GRAB sent (0x01)"
+                                   : "service /vehicle/gripper/grab: gripper GRAB send failed (0x01)",
+                                ok);
+            break;
+        }
+
+        case HighPriorityAction::GRIPPER_RELEASE: {
+            const bool ok = Gripper.Release();
+            _Log_Gripper_Action(ok ? "service /vehicle/gripper/release: gripper RELEASE sent (0x02)"
+                                   : "service /vehicle/gripper/release: gripper RELEASE send failed (0x02)",
+                                ok);
+            break;
+        }
     }
 }
 
@@ -355,13 +565,23 @@ void Class_Robot::_Chassis_Control()
     const bool remote_cmd_recent =
         snapshot.remote_twist.has_twist && snapshot.remote_twist.last_twist_ns > 0 &&
         (now - snapshot.remote_twist.last_twist_ns) <= kCmdTimeoutNs;
-    const bool buttons_recent = snapshot.has_buttons && snapshot.last_button_ns > 0 &&
-                                (now - snapshot.last_button_ns) <= kButtonTimeoutNs;
-    _Update_Chassis_Remote_Gate(buttons_recent, snapshot.button_code);
+    const bool buttons_recent_raw =
+        snapshot.has_buttons && snapshot.last_button_ns > 0 &&
+        (now - snapshot.last_button_ns) <= kButtonTimeoutNs;
+    if (suppress_remote_buttons_this_tick_)
+    {
+        last_chassis_button_code_ = buttons_recent_raw ?
+            snapshot.button_code :
+            LogF710_Key_IDLE;
+    }
+    else
+    {
+        _Update_Chassis_Remote_Gate(buttons_recent_raw, snapshot.button_code);
+    }
 
     const Velocity_Command *selected_cmd = nullptr;
     ChassisCommandSource selected_source = ChassisCommandSource::NONE;
-    if (ros_cmd_recent)
+    if (chassis_remote_enabled_ && ros_cmd_recent)
     {
         selected_cmd = &snapshot.ros_twist;
         selected_source = ChassisCommandSource::ROS2;
@@ -428,9 +648,7 @@ void Class_Robot::_Update_Chassis_Remote_Gate(bool buttons_recent, uint16_t butt
     {
         if (chassis_remote_enabled_ || back_rising)
         {
-            chassis_remote_enabled_ = false;
-            _Disable_Auxiliary_Motor();
-            _Log_Chassis_Start_Gate("BACK pressed: chassis remote DISABLED");
+            _Disable_Vehicle_Control("BACK pressed: vehicle DISABLED");
         }
         last_chassis_button_code_ = button_code;
         return;
@@ -438,11 +656,7 @@ void Class_Robot::_Update_Chassis_Remote_Gate(bool buttons_recent, uint16_t butt
 
     if (start_pressed && start_rising)
     {
-        chassis_remote_enabled_ = true;
-        Lift.Set_Control_Type(CHARIOT_LIFT_CONTROL_ENABLE);
-        Lift.Send_Enable_Burst();
-        _Enable_Auxiliary_Motor();
-        _Log_Chassis_Start_Gate("START pressed: chassis remote ENABLED");
+        _Enable_Vehicle_Control("START pressed: vehicle ENABLED");
     }
 
     last_chassis_button_code_ = button_code;
@@ -621,8 +835,11 @@ void Class_Robot::_Lift_Control()
     const bool remote_cmd_recent =
         snapshot.remote_twist.has_twist && snapshot.remote_twist.last_twist_ns > 0 &&
         (now - snapshot.remote_twist.last_twist_ns) <= kCmdTimeoutNs;
-    const bool buttons_recent = snapshot.has_buttons && snapshot.last_button_ns > 0 &&
-                                (now - snapshot.last_button_ns) <= kButtonTimeoutNs;
+    const bool buttons_recent_raw =
+        snapshot.has_buttons && snapshot.last_button_ns > 0 &&
+        (now - snapshot.last_button_ns) <= kButtonTimeoutNs;
+    const bool buttons_recent =
+        !suppress_remote_buttons_this_tick_ && buttons_recent_raw;
 
     if (!chassis_remote_enabled_)
     {
@@ -631,13 +848,21 @@ void Class_Robot::_Lift_Control()
         Lift.Set_Diff_Drive_Enable(false);
         Lift.Set_Target_Diff_Command(0.0f, 0.0f);
         Lift.Set_Control_Type(CHARIOT_LIFT_CONTROL_DISABLE);
-        last_lift_button_code_ = buttons_recent ? snapshot.button_code : LogF710_Key_IDLE;
-        last_gripper_button_code_ = buttons_recent ? snapshot.button_code : LogF710_Key_IDLE;
+        last_lift_button_code_ = buttons_recent_raw ? snapshot.button_code : LogF710_Key_IDLE;
+        last_gripper_button_code_ = buttons_recent_raw ? snapshot.button_code : LogF710_Key_IDLE;
         return;
     }
 
     Lift.Set_Control_Type(CHARIOT_LIFT_CONTROL_ENABLE);
-    _Gripper_Control(buttons_recent, snapshot.button_code);
+    if (suppress_remote_buttons_this_tick_)
+    {
+        last_lift_button_code_ = buttons_recent_raw ? snapshot.button_code : LogF710_Key_IDLE;
+        last_gripper_button_code_ = buttons_recent_raw ? snapshot.button_code : LogF710_Key_IDLE;
+    }
+    else
+    {
+        _Gripper_Control(buttons_recent, snapshot.button_code);
+    }
 
     auto log_lift_action = [this](const char *msg) {
         if (bridge_node_)
@@ -709,7 +934,7 @@ void Class_Robot::_Lift_Control()
 
         last_lift_button_code_ = snapshot.button_code;
     }
-    else
+    else if (!suppress_remote_buttons_this_tick_)
     {
         last_lift_button_code_ = LogF710_Key_IDLE;
         last_gripper_button_code_ = LogF710_Key_IDLE;
