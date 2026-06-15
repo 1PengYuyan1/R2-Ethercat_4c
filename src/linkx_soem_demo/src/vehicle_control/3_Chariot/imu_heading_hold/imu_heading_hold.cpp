@@ -70,6 +70,33 @@ void Class_Chariot_Imu_Heading_Hold::Stop()
     Reset_Heading_Lock();
 }
 
+Class_Chariot_Imu_Heading_Hold::Snapshot Class_Chariot_Imu_Heading_Hold::Get_Snapshot()
+{
+    Snapshot snapshot;
+    snapshot.valid = imu_valid_.load();
+    snapshot.roll_rad = latest_imu_roll_.load();
+    snapshot.pitch_rad = latest_imu_pitch_.load();
+    snapshot.yaw_rad = latest_imu_yaw_.load();
+    snapshot.angular_velocity_x = latest_imu_omega_x_.load();
+    snapshot.angular_velocity_y = latest_imu_omega_y_.load();
+    snapshot.angular_velocity_z = latest_imu_omega_z_.load();
+    snapshot.linear_acceleration_x = latest_imu_accel_x_.load();
+    snapshot.linear_acceleration_y = latest_imu_accel_y_.load();
+    snapshot.linear_acceleration_z = latest_imu_accel_z_.load();
+
+    const int64_t stamp_ns = latest_imu_ns_.load();
+    if (snapshot.valid && stamp_ns > 0)
+    {
+        const int64_t age_ns = now_ns() - stamp_ns;
+        snapshot.age_ms = age_ns / (1000LL * 1000LL);
+
+        std::lock_guard<std::mutex> lock(config_mtx_);
+        snapshot.fresh = age_ns <= config_.timeout_ns;
+    }
+
+    return snapshot;
+}
+
 float Class_Chariot_Imu_Heading_Hold::Correct_Omega(float vx_cmd,
                                                     float vy_cmd,
                                                     float omega_cmd,
@@ -133,16 +160,29 @@ void Class_Chariot_Imu_Heading_Hold::Reset_Heading_Lock_Locked()
 
 void Class_Chariot_Imu_Heading_Hold::Handle_Imu(const sensor_msgs::msg::Imu::SharedPtr msg)
 {
-    // 四元数 -> yaw, 归一化到 [-pi, pi]; HiPNUC 发布端为 best_effort, 必须用 SensorDataQoS
+    // 四元数 -> RPY, 归一化到 [-pi, pi]; HiPNUC 发布端为 best_effort, 必须用 SensorDataQoS
     const float w = static_cast<float>(msg->orientation.w);
     const float x = static_cast<float>(msg->orientation.x);
     const float y = static_cast<float>(msg->orientation.y);
     const float z = static_cast<float>(msg->orientation.z);
+    const float roll = atan2f(2.0f * (w * x + y * z),
+                              1.0f - 2.0f * (x * x + y * y));
+    const float pitch_sin = 2.0f * (w * y - z * x);
+    const float pitch = (std::fabs(pitch_sin) >= 1.0f) ?
+                        std::copysign(PI * 0.5f, pitch_sin) :
+                        asinf(pitch_sin);
     const float yaw = atan2f(2.0f * (w * z + x * y),
                              1.0f - 2.0f * (y * y + z * z));
 
+    latest_imu_roll_.store(Math_Modulus_Normalization(roll, 2.0f * PI));
+    latest_imu_pitch_.store(Math_Modulus_Normalization(pitch, 2.0f * PI));
     latest_imu_yaw_.store(Math_Modulus_Normalization(yaw, 2.0f * PI));
+    latest_imu_omega_x_.store(static_cast<float>(msg->angular_velocity.x));
+    latest_imu_omega_y_.store(static_cast<float>(msg->angular_velocity.y));
     latest_imu_omega_z_.store(static_cast<float>(msg->angular_velocity.z));
+    latest_imu_accel_x_.store(static_cast<float>(msg->linear_acceleration.x));
+    latest_imu_accel_y_.store(static_cast<float>(msg->linear_acceleration.y));
+    latest_imu_accel_z_.store(static_cast<float>(msg->linear_acceleration.z));
     latest_imu_ns_.store(now_ns());
     imu_valid_.store(true);
 }

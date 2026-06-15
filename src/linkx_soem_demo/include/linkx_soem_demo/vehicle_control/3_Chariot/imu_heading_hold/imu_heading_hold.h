@@ -18,9 +18,26 @@
 class Class_Chariot_Imu_Heading_Hold
 {
 public:
+    struct Snapshot
+    {
+        bool valid = false;
+        bool fresh = false;
+        int64_t age_ms = -1;
+        float roll_rad = 0.0f;
+        float pitch_rad = 0.0f;
+        float yaw_rad = 0.0f;
+        float angular_velocity_x = 0.0f;
+        float angular_velocity_y = 0.0f;
+        float angular_velocity_z = 0.0f;
+        float linear_acceleration_x = 0.0f;
+        float linear_acceleration_y = 0.0f;
+        float linear_acceleration_z = 0.0f;
+    };
+
     void Init(float max_chassis_omega);
     void Start(const std::shared_ptr<rclcpp::Node> &node);
     void Stop();
+    Snapshot Get_Snapshot();
 
     float Correct_Omega(float vx_cmd,
                         float vy_cmd,
@@ -50,8 +67,15 @@ protected:
     rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
 
     Class_PID heading_pid_;
+    std::atomic<float> latest_imu_roll_{0.0f};
+    std::atomic<float> latest_imu_pitch_{0.0f};
     std::atomic<float> latest_imu_yaw_{0.0f};
+    std::atomic<float> latest_imu_omega_x_{0.0f};
+    std::atomic<float> latest_imu_omega_y_{0.0f};
     std::atomic<float> latest_imu_omega_z_{0.0f};
+    std::atomic<float> latest_imu_accel_x_{0.0f};
+    std::atomic<float> latest_imu_accel_y_{0.0f};
+    std::atomic<float> latest_imu_accel_z_{0.0f};
     std::atomic<int64_t> latest_imu_ns_{0};
     std::atomic<bool> imu_valid_{false};
 

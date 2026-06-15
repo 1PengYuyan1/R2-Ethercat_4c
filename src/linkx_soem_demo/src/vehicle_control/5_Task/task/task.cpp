@@ -179,6 +179,38 @@ static void Format_Csv_Float(float value, char *buf, size_t len)
     }
 }
 
+static void Format_Table_Float(bool valid,
+                               float value,
+                               float scale,
+                               int precision,
+                               char *buf,
+                               size_t len)
+{
+    if (!valid)
+    {
+        std::snprintf(buf, len, "no_data");
+    }
+    else if (std::isnan(value))
+    {
+        std::snprintf(buf, len, "nan");
+    }
+    else if (!std::isfinite(value))
+    {
+        std::snprintf(buf, len, "%sinf", std::signbit(value) ? "-" : "+");
+    }
+    else
+    {
+        std::snprintf(buf, len, "%.*f", precision, value * scale);
+    }
+}
+
+static const char *Imu_State_Name(const Class_Chariot_Imu_Heading_Hold::Snapshot &imu)
+{
+    if (!imu.valid)
+        return "NO_DATA";
+    return imu.fresh ? "OK" : "STALE";
+}
+
 static std::string Make_Default_ToF_Button_Log_Path()
 {
     std::time_t now = std::time(nullptr);
@@ -474,9 +506,41 @@ static void Print_ToF_Terminal_Data()
 {
     Ensure_ToF_Print_Stream();
 
-    char line[768];
-    int n = std::snprintf(line, sizeof(line), "[LIFT-TOF]");
-    for (int i = 0; i < CHARIOT_LIFT_TOF_NUM && n < (int)sizeof(line) - 96; ++i)
+    const auto imu = robot.Get_Imu_Snapshot();
+    char roll_deg[24];
+    char pitch_deg[24];
+    char yaw_deg[24];
+    char gyro_x[24];
+    char gyro_y[24];
+    char gyro_z[24];
+    char accel_x[24];
+    char accel_y[24];
+    char accel_z[24];
+    char imu_age[24];
+
+    Format_Table_Float(imu.valid, imu.roll_rad, RAD_TO_DEG, 2, roll_deg, sizeof(roll_deg));
+    Format_Table_Float(imu.valid, imu.pitch_rad, RAD_TO_DEG, 2, pitch_deg, sizeof(pitch_deg));
+    Format_Table_Float(imu.valid, imu.yaw_rad, RAD_TO_DEG, 2, yaw_deg, sizeof(yaw_deg));
+    Format_Table_Float(imu.valid, imu.angular_velocity_x, 1.0f, 3, gyro_x, sizeof(gyro_x));
+    Format_Table_Float(imu.valid, imu.angular_velocity_y, 1.0f, 3, gyro_y, sizeof(gyro_y));
+    Format_Table_Float(imu.valid, imu.angular_velocity_z, 1.0f, 3, gyro_z, sizeof(gyro_z));
+    Format_Table_Float(imu.valid, imu.linear_acceleration_x, 1.0f, 3, accel_x, sizeof(accel_x));
+    Format_Table_Float(imu.valid, imu.linear_acceleration_y, 1.0f, 3, accel_y, sizeof(accel_y));
+    Format_Table_Float(imu.valid, imu.linear_acceleration_z, 1.0f, 3, accel_z, sizeof(accel_z));
+    if (imu.valid)
+        std::snprintf(imu_age, sizeof(imu_age), "%lld", (long long)imu.age_ms);
+    else
+        std::snprintf(imu_age, sizeof(imu_age), "no_data");
+
+    char frame[2048];
+    int n = std::snprintf(frame, sizeof(frame),
+                          "\033[2J\033[H[LIFT-TOF+IMU] refresh=%ums\n\n"
+                          "+------------------------+--------+----------+--------+----------+----------+\n"
+                          "| ToF topic              | status | range    | raw_cm | strength | frames   |\n"
+                          "+------------------------+--------+----------+--------+----------+----------+\n",
+                          (unsigned)kToFPrintPeriodMs);
+
+    for (int i = 0; i < CHARIOT_LIFT_TOF_NUM && n < (int)sizeof(frame) - 160; ++i)
     {
         const auto sensor = static_cast<Enum_Chariot_Lift_ToF_Sensor>(i);
         const ChariotLiftToFData &tof = robot.Lift.Get_ToF_Data(sensor);
@@ -485,35 +549,63 @@ static void Print_ToF_Terminal_Data()
 
         const char *value = tof.online ? range_buf : "no_data";
         const char *status = tof.online ? (tof.valid ? "OK" : "BAD") : "OFF";
-        n += std::snprintf(line + n, sizeof(line) - n,
-                           "%s%s=%s raw=%ucm %s",
-                           (i == 0) ? " " : " | ",
+        n += std::snprintf(frame + n, sizeof(frame) - n,
+                           "| %-22s | %-6s | %-8s | %6u | %8u | %8u |\n",
                            Lift_ToF_Topic(i),
+                           status,
                            value,
                            (unsigned)tof.distance_cm,
-                           status);
+                           (unsigned)tof.strength,
+                           (unsigned)tof.frame_count);
     }
 
-    if (n < (int)sizeof(line))
-        n += std::snprintf(line + n, sizeof(line) - n, "\n");
-    else
-        line[sizeof(line) - 1] = '\0';
+    if (n < (int)sizeof(frame) - 512)
+    {
+        n += std::snprintf(frame + n, sizeof(frame) - n,
+                           "+------------------------+--------+----------+--------+----------+----------+\n\n"
+                           "+---------+----------+-----------+-----------+-----------+-----------+-----------+-----------+\n"
+                           "| IMU     | age_ms   | roll_deg  | pitch_deg | yaw_deg   | gyro_x    | gyro_y    | gyro_z    |\n"
+                           "+---------+----------+-----------+-----------+-----------+-----------+-----------+-----------+\n"
+                           "| %-7s | %-8s | %9s | %9s | %9s | %9s | %9s | %9s |\n"
+                           "+---------+----------+-----------+-----------+-----------+-----------+-----------+-----------+\n"
+                           "| IMU     | accel_x  | accel_y   | accel_z   | units                                  |\n"
+                           "+---------+----------+-----------+-----------+----------------------------------------+\n"
+                           "| %-7s | %8s | %9s | %9s | gyro=rad/s, accel=m/s^2              |\n"
+                           "+---------+----------+-----------+-----------+----------------------------------------+\n",
+                           Imu_State_Name(imu),
+                           imu_age,
+                           roll_deg,
+                           pitch_deg,
+                           yaw_deg,
+                           gyro_x,
+                           gyro_y,
+                           gyro_z,
+                           Imu_State_Name(imu),
+                           accel_x,
+                           accel_y,
+                           accel_z);
+    }
 
-    const size_t len = (n > 0 && n < (int)sizeof(line)) ?
+    if (n < (int)sizeof(frame))
+        n += std::snprintf(frame + n, sizeof(frame) - n, "\n");
+    else
+        frame[sizeof(frame) - 1] = '\0';
+
+    const size_t len = (n > 0 && n < (int)sizeof(frame)) ?
         static_cast<size_t>(n) :
-        sizeof(line) - 1U;
+        sizeof(frame) - 1U;
 
     bool wrote_file = false;
     if (g_tof_print_stream.is_open())
     {
-        g_tof_print_stream.write(line, len);
+        g_tof_print_stream.write(frame, len);
         g_tof_print_stream.flush();
         wrote_file = true;
     }
 
     if (g_tof_print_stdout || !wrote_file)
     {
-        std::fwrite(line, 1, len, stdout);
+        std::fwrite(frame, 1, len, stdout);
         std::fflush(stdout);
     }
 }

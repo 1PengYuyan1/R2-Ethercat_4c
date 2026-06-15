@@ -19,9 +19,9 @@
 #define MAX_OMNI_CHASSIS_OMEGA              10.0f
 
 /* 底盘速度矢量斜坡：起步适中，停车/换向更快以保证遥控跟手 */
-#define OMNI_CHASSIS_LINEAR_ACCEL_LIMIT_M_S2 5.0f
+#define OMNI_CHASSIS_LINEAR_ACCEL_LIMIT_M_S2 8.0f
 #define OMNI_CHASSIS_LINEAR_DECEL_LIMIT_M_S2 12.0f
-#define OMNI_CHASSIS_ANG_ACCEL_LIMIT_RAD_S2  16.0f
+#define OMNI_CHASSIS_ANG_ACCEL_LIMIT_RAD_S2  24.0f
 #define OMNI_CHASSIS_ANG_DECEL_LIMIT_RAD_S2  32.0f
 
 /* 轮速梯形加减速参数（由 2026-06-08/09 架空测试结果收敛得到） */

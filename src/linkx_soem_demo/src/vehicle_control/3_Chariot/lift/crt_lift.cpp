@@ -1,5 +1,7 @@
 #include "crt_lift.h"
 
+#include "math.h"
+
 #include <cmath>
 #include <limits>
 
@@ -21,6 +23,13 @@ constexpr float kStairChassisForwardMps = 1.2f;
 constexpr uint32_t kStairLiftTimeoutTicks = 2500U;     // 5s at 2ms
 constexpr uint32_t kStairSensorTimeoutTicks = 5000U;   // 10s at 2ms
 constexpr uint32_t kStairExtraDriveTicks = 500U;       // 1s at 2ms
+constexpr uint32_t kStairDownAttitudeTimeoutTicks = 2500U;  // 5s at 2ms
+constexpr uint32_t kStairDownAttitudeStableTicks = 150U;     // 0.3s at 2ms
+constexpr float kStairDownAttitudeToleranceRad = 0.02f;
+constexpr float kStairDownAttitudeKp = 3.6f;
+constexpr float kStairDownAttitudeMaxYawRadS = 0.90f;
+constexpr float kStairDownAttitudeMinYawRadS = 0.16f;
+constexpr float kStairDownAttitudeMinYawErrorRad = 0.06f;
 
 struct LiftHoldFeedforwardTable
 {
@@ -45,6 +54,7 @@ enum StairTransition
     STAIR_TRANSITION_BOTH_RETRACTED,
     STAIR_TRANSITION_TOF_NEAR_OR_JUMP,
     STAIR_TRANSITION_TOF_JUMP,
+    STAIR_TRANSITION_ATTITUDE_CORRECTED,
     STAIR_TRANSITION_TIMER,
 };
 
@@ -239,8 +249,21 @@ constexpr StairStateConfig kStairStateConfigs[] = {
         false, false, 0.0f, 0.0f,
         STAIR_TRANSITION_BOTH_RETRACTED,
         CHARIOT_LIFT_TOF_DOWN_BACK,
-        CHARIOT_LIFT_STAIR_IDLE,
+        CHARIOT_LIFT_STAIR_DOWN_ATTITUDE_CORRECT,
         kStairLiftTimeoutTicks,
+        false,
+        false,
+    },
+    {
+        CHARIOT_LIFT_STAIR_DOWN_ATTITUDE_CORRECT,
+        "DOWN_ATTITUDE_CORRECT",
+        true, CHARIOT_LIFT_POSITION_RETRACT,
+        true, CHARIOT_LIFT_POSITION_RETRACT,
+        false, false, 0.0f, 0.0f,
+        STAIR_TRANSITION_ATTITUDE_CORRECTED,
+        CHARIOT_LIFT_TOF_DOWN_BACK,
+        CHARIOT_LIFT_STAIR_IDLE,
+        kStairDownAttitudeTimeoutTicks,
         false,
         true,
     },
@@ -715,6 +738,7 @@ void Class_Chariot_Lift::Start_Stair_Up(float raise_angle)
     Lift_Params[CHARIOT_LIFT_MODULE_FRONT].raise_angle = raise_angle;
     Lift_Params[CHARIOT_LIFT_MODULE_REAR].raise_angle = raise_angle;
     Stair_Raise_Angle = raise_angle;
+    Reset_Stair_Attitude_Correction();
     Enter_Stair_State(CHARIOT_LIFT_STAIR_UP_RAISE_ALL);
 }
 
@@ -724,6 +748,7 @@ void Class_Chariot_Lift::Start_Stair_Down(float raise_angle)
     Lift_Params[CHARIOT_LIFT_MODULE_FRONT].raise_angle = raise_angle;
     Lift_Params[CHARIOT_LIFT_MODULE_REAR].raise_angle = raise_angle;
     Stair_Raise_Angle = raise_angle;
+    Capture_Stair_Attitude_Target();
     Enter_Stair_State(CHARIOT_LIFT_STAIR_DOWN_CHASSIS_WAIT_UP_BACK);
 }
 
@@ -732,7 +757,22 @@ void Class_Chariot_Lift::Stop_Stair_Auto()
     Stair_State = CHARIOT_LIFT_STAIR_IDLE;
     Stair_State_Ticks = 0;
     Stair_Chassis_Forward = 0.0f;
+    Stair_Chassis_Omega = 0.0f;
     Set_Stair_Drive_Command(false, false, 0.0f);
+    Reset_Stair_Attitude_Correction();
+}
+
+void Class_Chariot_Lift::Set_Stair_Attitude_Yaw(float yaw_rad, bool valid)
+{
+    if (valid && std::isfinite(yaw_rad))
+    {
+        Stair_Attitude_Yaw = Math_Modulus_Normalization(yaw_rad, 2.0f * PI);
+        Stair_Attitude_Yaw_Valid = true;
+    }
+    else
+    {
+        Stair_Attitude_Yaw_Valid = false;
+    }
 }
 
 void Class_Chariot_Lift::Set_Both_Lift_Raise(float raise_angle)
@@ -780,6 +820,7 @@ void Class_Chariot_Lift::Update_Stair_Auto()
     if (Stair_State == CHARIOT_LIFT_STAIR_ABORT)
     {
         Stair_Chassis_Forward = 0.0f;
+        Stair_Chassis_Omega = 0.0f;
         Set_Stair_Drive_Command(false, false, 0.0f);
         return;
     }
@@ -801,6 +842,7 @@ void Class_Chariot_Lift::Update_Stair_Auto()
                             config->rear_drive_enable,
                             config->lift_drive_forward_m_s);
     Stair_Chassis_Forward = config->chassis_forward_m_s;
+    Stair_Chassis_Omega = 0.0f;
 
     bool transition_ready = false;
     switch (config->transition)
@@ -838,6 +880,9 @@ void Class_Chariot_Lift::Update_Stair_Auto()
         case STAIR_TRANSITION_TOF_JUMP:
             transition_ready = Is_Stair_ToF_Jumped(config->sensor);
             break;
+        case STAIR_TRANSITION_ATTITUDE_CORRECTED:
+            transition_ready = Is_Stair_Attitude_Corrected(config->timeout_ticks);
+            break;
         case STAIR_TRANSITION_TIMER:
             transition_ready = Is_Stair_State_Timed_Out(config->timeout_ticks);
             break;
@@ -869,6 +914,7 @@ void Class_Chariot_Lift::Enter_Stair_State(Enum_Chariot_Lift_Stair_State state)
     Stair_State = state;
     Stair_State_Ticks = 0;
     Stair_Chassis_Forward = 0.0f;
+    Stair_Chassis_Omega = 0.0f;
     Set_Stair_Drive_Command(false, false, 0.0f);
 
     for (int i = 0; i < CHARIOT_LIFT_TOF_NUM; ++i)
@@ -877,6 +923,8 @@ void Class_Chariot_Lift::Enter_Stair_State(Enum_Chariot_Lift_Stair_State state)
     const StairStateConfig *config = Find_Stair_State_Config(state);
     if (config != nullptr && config->capture_sensor_reference)
         Capture_Stair_ToF_Reference(config->sensor);
+    if (state == CHARIOT_LIFT_STAIR_DOWN_ATTITUDE_CORRECT)
+        Stair_Attitude_Stable_Ticks = 0;
     if (state == CHARIOT_LIFT_STAIR_ABORT)
         Set_Stair_Drive_Command(false, false, 0.0f);
 }
@@ -895,7 +943,9 @@ void Class_Chariot_Lift::Finish_Stair_Auto(bool retract_lift)
     Stair_State = CHARIOT_LIFT_STAIR_IDLE;
     Stair_State_Ticks = 0;
     Stair_Chassis_Forward = 0.0f;
+    Stair_Chassis_Omega = 0.0f;
     Set_Stair_Drive_Command(false, false, 0.0f);
+    Reset_Stair_Attitude_Correction();
     if (retract_lift)
     {
         Set_Stair_Lift_Command(true, CHARIOT_LIFT_POSITION_RETRACT,
@@ -1006,6 +1056,70 @@ bool Class_Chariot_Lift::Is_Lift_Feedback_Reached(Enum_Chariot_Lift_Module modul
 bool Class_Chariot_Lift::Is_Stair_State_Timed_Out(uint32_t timeout_ticks)
 {
     return Stair_State_Ticks >= timeout_ticks;
+}
+
+void Class_Chariot_Lift::Capture_Stair_Attitude_Target()
+{
+    Stair_Attitude_Stable_Ticks = 0;
+    Stair_Attitude_Target_Valid = Stair_Attitude_Yaw_Valid;
+    if (Stair_Attitude_Target_Valid)
+        Stair_Attitude_Target_Yaw = Stair_Attitude_Yaw;
+}
+
+void Class_Chariot_Lift::Reset_Stair_Attitude_Correction()
+{
+    Stair_Attitude_Target_Valid = false;
+    Stair_Attitude_Target_Yaw = 0.0f;
+    Stair_Attitude_Stable_Ticks = 0;
+    Stair_Chassis_Omega = 0.0f;
+}
+
+bool Class_Chariot_Lift::Is_Stair_Attitude_Corrected(uint32_t timeout_ticks)
+{
+    if (!Are_Both_Lifts_Reached(CHARIOT_LIFT_POSITION_RETRACT))
+    {
+        Stair_Chassis_Omega = 0.0f;
+        Stair_Attitude_Stable_Ticks = 0;
+        return false;
+    }
+
+    if (timeout_ticks > 0U && Is_Stair_State_Timed_Out(timeout_ticks))
+    {
+        Stair_Chassis_Omega = 0.0f;
+        return true;
+    }
+
+    if (!Stair_Attitude_Target_Valid || !Stair_Attitude_Yaw_Valid)
+    {
+        Stair_Chassis_Omega = 0.0f;
+        Stair_Attitude_Stable_Ticks = 0;
+        return false;
+    }
+
+    const float yaw_error =
+        Math_Modulus_Normalization(Stair_Attitude_Target_Yaw - Stair_Attitude_Yaw,
+                                   2.0f * PI);
+
+    if (fabsf(yaw_error) <= kStairDownAttitudeToleranceRad)
+    {
+        Stair_Chassis_Omega = 0.0f;
+        if (Stair_Attitude_Stable_Ticks < kStairDownAttitudeStableTicks)
+            ++Stair_Attitude_Stable_Ticks;
+        return Stair_Attitude_Stable_Ticks >= kStairDownAttitudeStableTicks;
+    }
+
+    Stair_Attitude_Stable_Ticks = 0;
+    float yaw_cmd = Clamp(yaw_error * kStairDownAttitudeKp,
+                          -kStairDownAttitudeMaxYawRadS,
+                           kStairDownAttitudeMaxYawRadS);
+    if (fabsf(yaw_error) > kStairDownAttitudeMinYawErrorRad &&
+        fabsf(yaw_cmd) < kStairDownAttitudeMinYawRadS)
+        yaw_cmd = (yaw_cmd >= 0.0f) ?
+            kStairDownAttitudeMinYawRadS :
+            -kStairDownAttitudeMinYawRadS;
+
+    Stair_Chassis_Omega = yaw_cmd;
+    return false;
 }
 
 void Class_Chariot_Lift::Reset_Lift_Profile(Enum_Chariot_Lift_Module module,

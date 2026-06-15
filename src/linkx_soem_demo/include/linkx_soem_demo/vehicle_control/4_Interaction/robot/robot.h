@@ -53,6 +53,7 @@ public:
     void Start_ROS2_Bridge();
     void Stop_ROS2_Bridge();
     ButtonSnapshot Get_Button_Snapshot();
+    Class_Chariot_Imu_Heading_Hold::Snapshot Get_Imu_Snapshot();
 
 protected:
     enum class ChassisCommandSource {
@@ -140,7 +141,26 @@ protected:
     bool suppress_remote_buttons_this_tick_ = false;
     LiftAuxSequenceState lift_aux_sequence_state_ = LiftAuxSequenceState::IDLE;
     float auxiliary_motor_target_angle_ = 0.0f;
+    float auxiliary_motor_smooth_angle_ = 0.0f;
+    float auxiliary_motor_profile_start_angle_ = 0.0f;
+    float auxiliary_motor_profile_target_angle_ = 0.0f;
+    float auxiliary_motor_profile_elapsed_ = 0.0f;
+    float auxiliary_motor_profile_duration_ = 0.0f;
+    float auxiliary_motor_profile_accel_time_ = 0.0f;
+    float auxiliary_motor_profile_decel_time_ = 0.0f;
+    float auxiliary_motor_profile_cruise_time_ = 0.0f;
+    float auxiliary_motor_profile_peak_speed_ = 0.0f;
+    float auxiliary_motor_profile_distance_ = 0.0f;
+    float auxiliary_motor_profile_direction_ = 1.0f;
+    float auxiliary_motor_target_omega_ = 0.0f;
+    float auxiliary_motor_hold_blend_ = 0.0f;
+    float auxiliary_motor_hold_angle_ = 0.0f;
+    uint32_t auxiliary_motor_hold_ready_ticks_ = 0U;
+    uint32_t auxiliary_motor_home_damping_ticks_ = 0U;
     bool auxiliary_motor_command_enable_ = false;
+    bool auxiliary_motor_profile_active_ = false;
+    bool auxiliary_motor_profile_initialized_ = false;
+    bool auxiliary_motor_hold_active_ = false;
 
     // 诊断：被 CAN_Rx_Callback 丢弃的未识别帧累计（通道/ID 都不匹配）
     std::atomic<uint64_t> unhandled_can_frames_{0};
@@ -161,12 +181,18 @@ protected:
     void _Update_Remote_Twist(float vx, float vy, float omega, float right_y);
     void _Update_Button_Code(uint16_t button_code);
     void _Update_Chassis_Remote_Gate(bool buttons_recent, uint16_t button_code);
+    void _Update_Lift_Attitude_Yaw();
+    void _Start_Stair_Down(float raise_angle);
     void _Enable_Auxiliary_Motor();
     void _Disable_Auxiliary_Motor();
     void _Cancel_Lift_Aux_Sequence();
     void _Start_Lift_Aux_Raise_Sequence();
     void _Start_Lift_Aux_Home_Sequence();
     void _Update_Lift_Aux_Sequence();
+    void _Reset_Auxiliary_Motor_Profile(float angle);
+    void _Start_Auxiliary_Motor_Profile(float target_angle);
+    float _Update_Auxiliary_Motor_Profile(float target_angle);
+    bool _Is_Auxiliary_Motor_Profile_At_Target() const;
     void _Output_Auxiliary_Motor();
     bool _Is_Auxiliary_Motor_Reached(float target_angle);
     void _Log_Chassis_Start_Gate(const char *msg);

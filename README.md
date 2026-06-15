@@ -355,14 +355,14 @@ joy_node ──► /joy ──► remote_node ──► /chassis/remote_cmd_vel 
 
 | 服务 | 动作 |
 | --- | --- |
-| `/vehicle/enable` | 整车使能,等价 START: 使能底盘/升降/辅助 `0x07` |
+| `/vehicle/enable` | 整车使能,等价 START: 使能底盘/升降,辅助 `0x07` 保持 `-0.05` |
 | `/vehicle/disable` | 整车失能,等价 BACK: 停止底盘/升降/辅助 `0x07` |
 | `/vehicle/stair/up_raise_8_0` | `-8.0` 角度上台阶 |
 | `/vehicle/stair/down_raise_8_0` | `-8.0` 角度下台阶 |
 | `/vehicle/stair/up_raise_14_3` | `-14.3` 角度上台阶 |
 | `/vehicle/stair/down_raise_14_3` | `-14.3` 角度下台阶 |
 | `/vehicle/lift_aux/raise` | 两侧升降到电机角 `-39.0`,再将辅助 `0x07` 控到 `1.5` |
-| `/vehicle/lift_aux/home` | 先将辅助 `0x07` 控到 `0.1`,再将升降收到 `-0.01` |
+| `/vehicle/lift_aux/home` | 先将辅助 `0x07` 控到 `-0.05`,再将升降收到 `-0.01` |
 | `/vehicle/gripper/grab` | 向夹爪/下位机发送 `0x01` |
 | `/vehicle/gripper/release` | 向夹爪/下位机发送 `0x02` |
 
