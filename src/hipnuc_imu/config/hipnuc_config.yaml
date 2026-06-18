@@ -1,8 +1,9 @@
 IMU_publisher:
     ros__parameters:
-        serial_port: "/dev/ttyUSB0"
+        serial_port: "/dev/imu"
         baud_rate: 921600
         frame_id: "imu_link"
+        publish_rate_hz: 0.0
         imu_switch: TRUE
         imu_topic: "/IMU_data"
         hardware_attitude_reset_on_start: TRUE

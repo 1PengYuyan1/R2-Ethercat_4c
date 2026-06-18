@@ -58,6 +58,7 @@ public:
 protected:
     enum class ChassisCommandSource {
         NONE,
+        HOLD_ZERO,
         ROS2,
         REMOTE
     };
@@ -198,8 +199,14 @@ protected:
     void _Log_Chassis_Start_Gate(const char *msg);
     void _Log_Gripper_Action(const char *msg, bool ok);
     void _Log_Chassis_Diagnostic(bool ros_cmd_recent,
-                                 bool remote_cmd_recent,
-                                 ChassisCommandSource source);
+                                  bool remote_cmd_recent,
+                                  ChassisCommandSource source);
+    void _Trace_Chassis_Command(const Ros_Command &snapshot,
+                                bool ros_cmd_recent,
+                                bool remote_cmd_recent,
+                                bool cmd_disable_watchdog_alive,
+                                ChassisCommandSource source,
+                                int64_t now);
 
     // 启动期检查：同一通道内 DM_CAN_Rx_ID 不能重号
     void _Verify_Motor_ID_Uniqueness();

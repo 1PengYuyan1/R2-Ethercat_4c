@@ -37,21 +37,23 @@ void Class_Chassis_Omni::Init_Motor_Params()
         .wheel_stiction_torque   = 0.1300f,
         .wheel_dynamic_friction  = 0.2960f,
         .wheel_rotor_inertia     = 0.017600f,
-        .wheel_feedforward_scale = 0.84f,
+        .wheel_feedforward_scale = 0.5842f,
+        .wheel_breakaway_torque  = 0.85f,
         .wheel_accel_limit       = OMNI_WHEEL_ACCEL_LIMIT_RAD_S2,
         .wheel_decel_limit       = OMNI_WHEEL_DECEL_LIMIT_RAD_S2,
     };
 
     wheel_params_[1] = {
         .wheel_kp                = 0.0f,
-        .wheel_kd                = 0.7f,
+        .wheel_kd                = 1.2f,
         .wheel_direction         = 1.0f,
         .wheel_speed_correction  = 1.275f,
         .wheel_omega_deadzone    = 0.05f,
         .wheel_stiction_torque   = 0.2400f,
         .wheel_dynamic_friction  = 0.3962f,
         .wheel_rotor_inertia     = 0.011424f,
-        .wheel_feedforward_scale = 0.38f,
+        .wheel_feedforward_scale = 0.5472f,
+        .wheel_breakaway_torque  = 1.10f,
         .wheel_accel_limit       = OMNI_WHEEL_ACCEL_LIMIT_RAD_S2,
         .wheel_decel_limit       = OMNI_WHEEL_DECEL_LIMIT_RAD_S2,
     };
@@ -65,7 +67,8 @@ void Class_Chassis_Omni::Init_Motor_Params()
         .wheel_stiction_torque   = 0.4800f,
         .wheel_dynamic_friction  = 0.4301f,
         .wheel_rotor_inertia     = 0.013110f,
-        .wheel_feedforward_scale = 0.77f,
+        .wheel_feedforward_scale = 1.1088f,
+        .wheel_breakaway_torque  = 0.45f,
         .wheel_accel_limit       = OMNI_WHEEL_ACCEL_LIMIT_RAD_S2,
         .wheel_decel_limit       = OMNI_WHEEL_DECEL_LIMIT_RAD_S2,
     };
@@ -79,7 +82,8 @@ void Class_Chassis_Omni::Init_Motor_Params()
         .wheel_stiction_torque   = 0.3000f,
         .wheel_dynamic_friction  = 0.2767f,
         .wheel_rotor_inertia     = 0.014040f,
-        .wheel_feedforward_scale = 0.84f,
+        .wheel_feedforward_scale = 0.5769f,
+        .wheel_breakaway_torque  = 0.60f,
         .wheel_accel_limit       = OMNI_WHEEL_ACCEL_LIMIT_RAD_S2,
         .wheel_decel_limit       = OMNI_WHEEL_DECEL_LIMIT_RAD_S2,
     };
@@ -172,17 +176,17 @@ void Class_Chassis_Omni::TIM_2ms_Control_PeriodElapsedCallback()
  * @brief 里程计正解
  *
  * 数学推导（4 轮 X-布局，全向轮，对称安装，坐标系按新车头定义）：
- *   每个轮子在底盘系下的滚动单位方向 t_i = (-sinθ_i, cosθ_i)
- *   轮的线速度 v_i = v_chassis · t_i + ω · L
- *                 = -v_x sinθ_i + v_y cosθ_i + ω · L
+ *   每个轮子在底盘系下的滚动单位方向 t_i = (-sinθ_i, -cosθ_i)
+ *   轮的线速度 v_i = v_chassis · t_i - ω · L
+ *                 = -v_x sinθ_i - v_y cosθ_i - ω · L
  *
  *   对称性： Σsinθ_i = 0, Σcosθ_i = 0, Σsinθ_i cosθ_i = 0,
  *           Σsin²θ_i = 2,  Σcos²θ_i = 2  (4 轮等间隔)
  *
  *   反解（最小二乘）：
  *     v_x =  Σ v_i · (-sinθ_i) / 2
- *     v_y =  Σ v_i ·  cosθ_i  / 2
- *     ω   =  Σ v_i / (4L)
+ *     v_y =  Σ v_i · (-cosθ_i) / 2
+ *     ω   = -Σ v_i / (4L)
  */
 void Class_Chassis_Omni::Self_Resolution()
 {
@@ -193,12 +197,13 @@ void Class_Chassis_Omni::Self_Resolution()
     for (int i = 0; i < OMNI_WHEEL_NUM; i++)
     {
         float wheel_speed = Motor_Wheel[i].Get_Now_Omega() *
+                            OMNI_WHEEL_FEEDBACK_GEAR_SCALE *
                             Wheel_Radius *
                             wheel_params_[i].wheel_direction;
 
         Now_Velocity_X += wheel_speed * (-sinf(Wheel_Azimuth[i])) * 2.0f / (float)OMNI_WHEEL_NUM;
-        Now_Velocity_Y += wheel_speed *   cosf(Wheel_Azimuth[i])  * 2.0f / (float)OMNI_WHEEL_NUM;
-        Now_Omega      += wheel_speed / Wheel_To_Core_Distance / (float)OMNI_WHEEL_NUM;
+        Now_Velocity_Y += wheel_speed * (-cosf(Wheel_Azimuth[i])) * 2.0f / (float)OMNI_WHEEL_NUM;
+        Now_Omega      -= wheel_speed / Wheel_To_Core_Distance / (float)OMNI_WHEEL_NUM;
     }
 }
 
@@ -267,7 +272,7 @@ void Class_Chassis_Omni::Apply_Chassis_Trapezoid_Profile()
 /**
  * @brief 运动学逆解
  *
- *   v_i = -v_x sinθ_i + v_y cosθ_i + ω · L
+ *   v_i = -v_x sinθ_i - v_y cosθ_i - ω · L
  *   ω_motor_i = (v_i / R_wheel) · direction · correction
  *
  * 处理流程：
@@ -300,8 +305,8 @@ void Class_Chassis_Omni::Kinematics_Inverse_Resolution()
     float max_wheel_omega = 0.0f;
     for (int i = 0; i < OMNI_WHEEL_NUM; i++)
     {
-        float v_wheel = -vx_cmd * sinf(Wheel_Azimuth[i]) +
-                         vy_cmd * cosf(Wheel_Azimuth[i]) +
+        float v_wheel = -vx_cmd * sinf(Wheel_Azimuth[i]) -
+                         vy_cmd * cosf(Wheel_Azimuth[i]) -
                          omega_cmd * Wheel_To_Core_Distance;
 
         Raw_Target_Wheel_Omega[i] = (v_wheel / Wheel_Radius) *
@@ -413,7 +418,7 @@ void Class_Chassis_Omni::Apply_Wheel_Trapezoid_Profile()
  * @brief 下发 MIT 报文
  *
  * MIT 速度模式（无位置环）：
- *   target_pos = 0, target_omega = Target_Wheel_Omega[i],
+ *   target_pos = 0, target_omega = Target_Wheel_Omega[i] · gear_scale,
  *   target_torque = stiction + inertia feedforward, Kp = 0, Kd = wheel_kd
  *
  * 与原舵轮代码 DRIVE 状态下的轮电机配置保持一致：
@@ -447,12 +452,33 @@ void Class_Chassis_Omni::Output_To_Motor()
                           wheel_params_[i].wheel_feedforward_scale *
                           wheel_params_[i].wheel_rotor_inertia *
                           Wheel_Accel_Filtered[i];
+
+        const float now_omega = Motor_Wheel[i].Get_Now_Omega() *
+                                OMNI_WHEEL_FEEDBACK_GEAR_SCALE *
+                                wheel_params_[i].wheel_direction;
+        const float tracking_error = target_omega - now_omega;
+        const bool tracking_shortfall =
+            (target_omega * tracking_error) > 0.0f &&
+            fabsf(now_omega) < fabsf(target_omega) * OMNI_WHEEL_BREAKAWAY_RATIO;
+        if (fabsf(target_omega) > deadzone && tracking_shortfall)
+        {
+            float low_speed_weight =
+                (OMNI_WHEEL_BREAKAWAY_OMEGA_RAD_S - fabsf(now_omega)) /
+                OMNI_WHEEL_BREAKAWAY_OMEGA_RAD_S;
+            if (low_speed_weight > 1.0f) low_speed_weight = 1.0f;
+            if (low_speed_weight < 0.0f) low_speed_weight = 0.0f;
+
+            torque_ff += ((target_omega > 0.0f) ? 1.0f : -1.0f) *
+                         wheel_params_[i].wheel_breakaway_torque *
+                         low_speed_weight;
+        }
+
         if (torque_ff >  OMNI_WHEEL_TORQUE_FF_LIMIT_NM) torque_ff =  OMNI_WHEEL_TORQUE_FF_LIMIT_NM;
         if (torque_ff < -OMNI_WHEEL_TORQUE_FF_LIMIT_NM) torque_ff = -OMNI_WHEEL_TORQUE_FF_LIMIT_NM;
 
         Motor_Wheel[i].Set_Control_Maintain_Postion(
             0.0f,
-            target_omega,
+            target_omega * OMNI_WHEEL_COMMAND_GEAR_SCALE,
             torque_ff,
             wheel_params_[i].wheel_kp,
             wheel_params_[i].wheel_kd);

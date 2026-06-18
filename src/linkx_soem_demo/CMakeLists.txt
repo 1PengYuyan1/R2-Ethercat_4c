@@ -73,6 +73,10 @@ set(VEHICLE_CONTROL_SRC
     src/vehicle_control/main.cpp
     src/vehicle_control/5_Task/task/task.cpp
     src/vehicle_control/4_Interaction/robot/robot.cpp
+    src/diagnostics/chassis_trace/chassis_trace_logger.cpp
+    src/diagnostics/can_terminal/can_terminal_printer.cpp
+    src/diagnostics/task_terminal/task_terminal_diagnostics.cpp
+    src/diagnostics/timing_terminal/timing_terminal_printer.cpp
 
     # 3_Chariot —— 全向轮工况
     src/vehicle_control/3_Chariot/chassis/omni_wheel/crt_chassis_omni.cpp
@@ -117,6 +121,10 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     include/linkx_soem_demo/vehicle_control/3_Chariot/gripper
     include/linkx_soem_demo/vehicle_control/4_Interaction/robot
     include/linkx_soem_demo/vehicle_control/5_Task/task
+    src/diagnostics/chassis_trace
+    src/diagnostics/can_terminal
+    src/diagnostics/task_terminal
+    src/diagnostics/timing_terminal
 )
 
 target_link_libraries(${PROJECT_NAME}
@@ -163,7 +171,22 @@ set(LINKX_SOEM_INSTALL_TARGETS
 )
 
 # ============================================================================
-# 4) extra_tests：源文件存在时自动注册，避免未落地测试阻断整包配置
+# 4) diagnostics：独立诊断工具
+# ============================================================================
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/diagnostics/lift_3519_readonly/lift_3519_readonly_main.cpp")
+    add_executable(lift_3519_readonly
+        src/diagnostics/lift_3519_readonly/lift_3519_readonly_main.cpp
+        src/vehicle_control/2_Device/Motor/dvc_motor_dm.cpp
+        ${SOEM_SRC}
+        ${LINKX_BRIDGE_SRC}
+    )
+    target_include_directories(lift_3519_readonly PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
+    target_link_libraries(lift_3519_readonly pcap pthread rt m)
+    list(APPEND LINKX_SOEM_INSTALL_TARGETS lift_3519_readonly)
+endif()
+
+# ============================================================================
+# 5) extra_tests：源文件存在时自动注册，避免未落地测试阻断整包配置
 # ============================================================================
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/dm_motor_param_calib_main.cpp")
     add_executable(dm_motor_param_calib
@@ -237,6 +260,20 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/imu_heading_hold_sweep_ma
         rcl_interfaces
     )
     list(APPEND LINKX_SOEM_INSTALL_TARGETS imu_heading_hold_sweep)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/remote_chassis_yaw_tune_main.cpp")
+    add_executable(remote_chassis_yaw_tune
+        src/extra_tests/remote_chassis_yaw_tune_main.cpp
+    )
+    target_include_directories(remote_chassis_yaw_tune PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
+    ament_target_dependencies(remote_chassis_yaw_tune
+        rclcpp
+        geometry_msgs
+        sensor_msgs
+        rcl_interfaces
+    )
+    list(APPEND LINKX_SOEM_INSTALL_TARGETS remote_chassis_yaw_tune)
 endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/lift_3519_feedback_main.cpp")

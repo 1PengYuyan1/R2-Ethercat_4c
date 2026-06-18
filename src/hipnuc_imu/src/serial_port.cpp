@@ -56,6 +56,7 @@ namespace hipnuc_driver
 				this->declare_parameter<std::string>("magnetic_topic", "/magnetic_data");
 				this->declare_parameter<std::string>("temperature_topic", "/temperature_data");
 				this->declare_parameter<std::string>("pressure_topic", "/pressure_data");
+				this->declare_parameter<double>("publish_rate_hz", 0.0);
 				this->declare_parameter<bool>("imu_switch", true);
 				this->declare_parameter<bool>("euler_switch", false);
 				this->declare_parameter<bool>("magnetic_switch", false);
@@ -74,6 +75,7 @@ namespace hipnuc_driver
 				this->get_parameter("magnetic_topic", magnetic_topic);
 				this->get_parameter("temperature_topic", temperature_topic);
 				this->get_parameter("pressure_topic", pressure_topic);
+				this->get_parameter("publish_rate_hz", publish_rate_hz);
 				this->get_parameter("imu_switch", imu_switch);
 				this->get_parameter("euler_switch", euler_switch);
 				this->get_parameter("magnetic_switch", magnetic_switch);
@@ -92,6 +94,7 @@ namespace hipnuc_driver
 				RCLCPP_INFO(this->get_logger(), "magnetic_topic: %s\r\n", magnetic_topic.c_str());
 				RCLCPP_INFO(this->get_logger(), "temperature_topic: %s\r\n", temperature_topic.c_str());
 				RCLCPP_INFO(this->get_logger(), "pressure_topic: %s\r\n", pressure_topic.c_str());
+				RCLCPP_INFO(this->get_logger(), "publish_rate_hz: %.3f\r\n", publish_rate_hz);
 				RCLCPP_INFO(this->get_logger(), "imu_switch: %d\r\n", imu_switch);
 				RCLCPP_INFO(this->get_logger(), "euler_switch: %d\r\n", euler_switch);
 				RCLCPP_INFO(this->get_logger(), "magnetic_switch: %d\r\n", magnetic_switch);
@@ -288,6 +291,9 @@ namespace hipnuc_driver
 							pre_msg.header.stamp = rclcpp::Clock().now();
                         }
 						else 
+							continue;
+
+						if (!should_publish_now())
 							continue;
 
 						if (imu_switch) {
@@ -513,6 +519,30 @@ namespace hipnuc_driver
 				return true;
 			}
 
+			bool should_publish_now()
+			{
+				if (publish_rate_hz <= 0.0)
+					return true;
+
+				const auto now = std::chrono::steady_clock::now();
+				const auto min_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / publish_rate_hz));
+				if (last_publish_time.time_since_epoch().count() == 0)
+				{
+					last_publish_time = now;
+					return true;
+				}
+
+				if (now < last_publish_time + min_interval)
+					return false;
+
+				do
+				{
+					last_publish_time += min_interval;
+				} while (now >= last_publish_time + min_interval);
+
+				return true;
+			}
+
 			void apply_attitude_zero_to_euler(geometry_msgs::msg::Vector3Stamped &msg)
 			{
 				if (!reset_attitude_on_start)
@@ -563,6 +593,7 @@ namespace hipnuc_driver
 			std::string serial_port;
 			int baud_rate;
 			std::string frame_id;
+			double publish_rate_hz;
 			bool imu_switch;
 			bool euler_switch;
 				bool magnetic_switch;
@@ -582,6 +613,7 @@ namespace hipnuc_driver
 				double euler_zero_y = 0.0;
 				double euler_zero_z = 0.0;
 				std::chrono::steady_clock::time_point attitude_reset_start_time;
+				std::chrono::steady_clock::time_point last_publish_time;
 			std::string imu_topic;
 			std::string euler_topic;
 			std::string magnetic_topic;

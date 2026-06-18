@@ -27,8 +27,6 @@ public:
     }
 
 private:
-    uint16_t last_logged_button_ = 0xFFFFU;
-
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr sub_cmd_;
     rclcpp::Subscription<std_msgs::msg::UInt16>::SharedPtr sub_buttons_;
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr pub_cmd_;
@@ -40,12 +38,6 @@ private:
 
     void buttonCallback(const std_msgs::msg::UInt16::SharedPtr msg) {
         pub_buttons_->publish(*msg);
-        if (msg->data != last_logged_button_) {
-            last_logged_button_ = msg->data;
-            RCLCPP_WARN(this->get_logger(),
-                        "button relay: code=0x%04X",
-                        static_cast<unsigned>(msg->data));
-        }
     }
 
 };

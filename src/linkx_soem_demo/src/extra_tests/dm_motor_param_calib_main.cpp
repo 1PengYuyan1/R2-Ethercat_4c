@@ -509,7 +509,7 @@ int main(int argc, char **argv)
     ec_busywait_ms(tick, 3000);
 
     mkdir("var_data", 0755);
-    std::ofstream summary("var_data/dm_motor_param_calib_result.txt", std::ios::app);
+    std::ofstream summary("var_data/calibration/dm_motor_param_calib_result.txt", std::ios::app);
     append_summary_header(summary, motor_str, st_wheel, test);
 
     auto &mot = target_motor();
@@ -604,7 +604,7 @@ int main(int argc, char **argv)
     std::cout << "\n[CALIB] disabling DM motors...\n";
     disable_all_motors(tick);
 
-    std::cout << "[CALIB] result appended to var_data/dm_motor_param_calib_result.txt\n";
+    std::cout << "[CALIB] result appended to var_data/calibration/dm_motor_param_calib_result.txt\n";
     std::cout << "[CALIB] done.\n";
     return 0;
 }

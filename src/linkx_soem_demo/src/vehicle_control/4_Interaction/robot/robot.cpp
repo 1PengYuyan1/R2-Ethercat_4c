@@ -17,16 +17,18 @@
 //   robot.TIM_100ms_Alive_PeriodElapsedCallback() 每 100ms 调一次
 
 #include "robot.h"
+#include "chassis_trace_logger.h"
 
 #include <cmath>
 #include <cstddef>
-#include <iostream>
 #include <string>
 
 namespace
 {
-constexpr int64_t kCmdTimeoutNs = 200LL * 1000LL * 1000LL;  // 200 ms
+constexpr int64_t kCmdFreshTimeoutNs = 200LL * 1000LL * 1000LL;  // 200 ms
+constexpr int64_t kCmdDisableTimeoutNs = 2LL * 1000LL * 1000LL * 1000LL;  // 2 s
 constexpr int64_t kButtonTimeoutNs = 500LL * 1000LL * 1000LL;  // 500 ms
+constexpr int kRosSpinRateHz = 1000;
 constexpr const char *kRosCmdTopic = "/chassis/cmd_vel";
 constexpr const char *kRemoteCmdTopic = "/chassis/remote_cmd_vel";
 constexpr float kManualBothLiftMotorRaiseAngle = -39.0f;
@@ -103,42 +105,6 @@ void Class_Robot::Init(linkx_t *__LinkX_Handler)
 
 void Class_Robot::_Verify_Motor_ID_Uniqueness()
 {
-    // R2 CAN 通道分布（新车头为原车尾）：
-    //   ch0：index 1/2 全向轮（Tx 0x02/0x01）+ 前抬升（Tx 0x03/0x04/0x05）+ 辅助电机（Tx 0x07）
-    //   ch1：index 0/3 全向轮（Tx 0x02/0x01）+ 后抬升（Tx 0x03/0x04/0x05）
-    // 同通道内 Rx ID 必须互不相同。
-
-    auto warn_dup = [](const char *channel_name, int a, int b, uint16_t id) {
-        std::cerr << "[ROBOT][WARN] Same-channel DM CAN Rx ID collision on "
-                  << channel_name << " between motor[" << a << "] and motor[" << b
-                  << "] (Rx_ID=0x" << std::hex << id << std::dec << ")." << std::endl;
-    };
-
-    auto check_pair = [&](const char *channel_name, uint16_t ids[], int n) {
-        for (int i = 0; i < n; ++i)
-            for (int j = i + 1; j < n; ++j)
-                if (ids[i] == ids[j]) warn_dup(channel_name, i, j, ids[i]);
-    };
-
-    uint16_t ch0_ids[6] = {
-        Chassis.Motor_Wheel[1].DM_CAN_Rx_ID,
-        Chassis.Motor_Wheel[2].DM_CAN_Rx_ID,
-        Lift.Motor_Drive_Left[CHARIOT_LIFT_MODULE_FRONT].DM_CAN_Rx_ID,
-        Lift.Motor_Drive_Right[CHARIOT_LIFT_MODULE_FRONT].DM_CAN_Rx_ID,
-        Lift.Motor_Lift[CHARIOT_LIFT_MODULE_FRONT].DM_CAN_Rx_ID,
-        Auxiliary_Motor.DM_CAN_Rx_ID,
-    };
-    check_pair("ch0 (omni+front lift+aux motor)", ch0_ids, 6);
-
-    uint16_t ch1_ids[5] = {
-        Chassis.Motor_Wheel[0].DM_CAN_Rx_ID,
-        Chassis.Motor_Wheel[3].DM_CAN_Rx_ID,
-        Lift.Motor_Drive_Left[CHARIOT_LIFT_MODULE_REAR].DM_CAN_Rx_ID,
-        Lift.Motor_Drive_Right[CHARIOT_LIFT_MODULE_REAR].DM_CAN_Rx_ID,
-        Lift.Motor_Lift[CHARIOT_LIFT_MODULE_REAR].DM_CAN_Rx_ID,
-    };
-    check_pair("ch1 (omni+rear lift)", ch1_ids, 5);
-
 }
 
 void Class_Robot::Loop()
@@ -217,11 +183,6 @@ void Class_Robot::Start_ROS2_Bridge()
     pub_odom_ = bridge_node_->create_publisher<geometry_msgs::msg::Twist>("/chassis/odom_twist", 50);
     _Register_Action_Services();
 
-    RCLCPP_INFO(bridge_node_->get_logger(),
-                "command priority: action services > ROS2 %s > remote %s",
-                kRosCmdTopic,
-                kRemoteCmdTopic);
-
     ros_bridge_running_.store(true);
     ros_spin_thread_ = std::thread(&Class_Robot::_ROS2_Spin_Loop, this);
 }
@@ -258,7 +219,7 @@ void Class_Robot::Stop_ROS2_Bridge()
 
 void Class_Robot::_ROS2_Spin_Loop()
 {
-    rclcpp::WallRate rate(200);
+    rclcpp::WallRate rate(kRosSpinRateHz);
     while (ros_bridge_running_.load() && rclcpp::ok())
     {
         rclcpp::spin_some(bridge_node_);
@@ -318,25 +279,14 @@ void Class_Robot::_Register_Action_Services()
 
 bool Class_Robot::_Enqueue_High_Priority_Action(HighPriorityAction action, const char *name)
 {
+    (void)name;
     std::lock_guard<std::mutex> lock(cmd_mtx_);
     if (high_priority_actions_.size() >= kHighPriorityActionQueueMax)
     {
-        if (bridge_node_)
-        {
-            RCLCPP_ERROR(bridge_node_->get_logger(),
-                         "high-priority action queue full, reject %s",
-                         name);
-        }
         return false;
     }
 
     high_priority_actions_.push_back(action);
-    if (bridge_node_)
-    {
-        RCLCPP_WARN(bridge_node_->get_logger(),
-                    "high-priority action queued: %s",
-                    name);
-    }
     return true;
 }
 
@@ -496,12 +446,6 @@ void Class_Robot::_Update_Button_Code(uint16_t button_code)
     if (button_code != last_chassis_rx_button_code_)
     {
         last_chassis_rx_button_code_ = button_code;
-        if (bridge_node_)
-        {
-            RCLCPP_WARN(bridge_node_->get_logger(),
-                        "chassis button rx: code=0x%04X",
-                        static_cast<unsigned>(button_code));
-        }
     }
 }
 
@@ -598,12 +542,17 @@ void Class_Robot::_Chassis_Control()
     }
 
     const int64_t now = now_ns();
+    const bool ros_cmd_known =
+        snapshot.ros_twist.has_twist && snapshot.ros_twist.last_twist_ns > 0;
+    const bool remote_cmd_known =
+        snapshot.remote_twist.has_twist && snapshot.remote_twist.last_twist_ns > 0;
     const bool ros_cmd_recent =
-        snapshot.ros_twist.has_twist && snapshot.ros_twist.last_twist_ns > 0 &&
-        (now - snapshot.ros_twist.last_twist_ns) <= kCmdTimeoutNs;
+        ros_cmd_known && (now - snapshot.ros_twist.last_twist_ns) <= kCmdFreshTimeoutNs;
     const bool remote_cmd_recent =
-        snapshot.remote_twist.has_twist && snapshot.remote_twist.last_twist_ns > 0 &&
-        (now - snapshot.remote_twist.last_twist_ns) <= kCmdTimeoutNs;
+        remote_cmd_known && (now - snapshot.remote_twist.last_twist_ns) <= kCmdFreshTimeoutNs;
+    const bool cmd_disable_watchdog_alive =
+        (ros_cmd_known && (now - snapshot.ros_twist.last_twist_ns) <= kCmdDisableTimeoutNs) ||
+        (remote_cmd_known && (now - snapshot.remote_twist.last_twist_ns) <= kCmdDisableTimeoutNs);
     const bool buttons_recent_raw =
         snapshot.has_buttons && snapshot.last_button_ns > 0 &&
         (now - snapshot.last_button_ns) <= kButtonTimeoutNs;
@@ -661,6 +610,24 @@ void Class_Robot::_Chassis_Control()
             _Log_Chassis_Diagnostic(ros_cmd_recent, remote_cmd_recent, selected_source);
         }
     }
+    else if (chassis_remote_enabled_ && cmd_disable_watchdog_alive)
+    {
+        selected_source = ChassisCommandSource::HOLD_ZERO;
+        const bool lift_diff_mode = Lift.Get_Diff_Drive_Enable();
+        (void)imu_heading_hold_.Correct_Omega(0.0f, 0.0f, 0.0f, lift_diff_mode, now);
+
+        Chassis.Set_Chassis_Control_Type(Chassis_Omni_Control_Type_ENABLE);
+        Chassis.Set_Target_Velocity_X(0.0f);
+        Chassis.Set_Target_Velocity_Y(0.0f);
+        Chassis.Set_Target_Omega(0.0f);
+        if ((now - last_chassis_diag_ns_) >= 1000LL * 1000LL * 1000LL)
+        {
+            last_chassis_diag_ns_ = now;
+            _Log_Chassis_Diagnostic(ros_cmd_recent,
+                                    remote_cmd_recent,
+                                    ChassisCommandSource::HOLD_ZERO);
+        }
+    }
     else
     {
         Chassis.Set_Chassis_Control_Type(Chassis_Omni_Control_Type_DISABLE);
@@ -668,6 +635,13 @@ void Class_Robot::_Chassis_Control()
         Chassis.Set_Target_Velocity_Y(0.0f);
         Chassis.Set_Target_Omega(0.0f);
     }
+
+    _Trace_Chassis_Command(snapshot,
+                           ros_cmd_recent,
+                           remote_cmd_recent,
+                           cmd_disable_watchdog_alive,
+                           selected_source,
+                           now);
 }
 
 void Class_Robot::_Update_Chassis_Remote_Gate(bool buttons_recent, uint16_t button_code)
@@ -1153,59 +1127,76 @@ bool Class_Robot::_Is_Auxiliary_Motor_Reached(float target_angle)
 
 void Class_Robot::_Log_Chassis_Start_Gate(const char *msg)
 {
-    if (bridge_node_)
-        RCLCPP_WARN(bridge_node_->get_logger(), "%s", msg);
-    else
-        std::cerr << "[ROBOT][WARN] " << msg << std::endl;
+    (void)msg;
+}
+
+void Class_Robot::_Trace_Chassis_Command(const Ros_Command &snapshot,
+                                         bool ros_cmd_recent,
+                                         bool remote_cmd_recent,
+                                         bool cmd_disable_watchdog_alive,
+                                         ChassisCommandSource source,
+                                         int64_t now)
+{
+    chassis_trace::Sample sample;
+    sample.now_ns = now;
+    sample.source = static_cast<int>(source);
+    sample.chassis_enabled =
+        (Chassis.Get_Chassis_Control_Type() == Chassis_Omni_Control_Type_ENABLE) ? 1 : 0;
+
+    const bool ros_known =
+        snapshot.ros_twist.has_twist && snapshot.ros_twist.last_twist_ns > 0;
+    const bool remote_known =
+        snapshot.remote_twist.has_twist && snapshot.remote_twist.last_twist_ns > 0;
+
+    sample.ros_known = ros_known ? 1 : 0;
+    sample.remote_known = remote_known ? 1 : 0;
+    sample.ros_recent = ros_cmd_recent ? 1 : 0;
+    sample.remote_recent = remote_cmd_recent ? 1 : 0;
+    sample.disable_watchdog_alive = cmd_disable_watchdog_alive ? 1 : 0;
+    sample.ros_age_ms =
+        ros_known ? (now - snapshot.ros_twist.last_twist_ns) / (1000LL * 1000LL) : -1;
+    sample.remote_age_ms =
+        remote_known ? (now - snapshot.remote_twist.last_twist_ns) / (1000LL * 1000LL) : -1;
+
+    sample.ros_vx = snapshot.ros_twist.vx;
+    sample.ros_vy = snapshot.ros_twist.vy;
+    sample.ros_omega = snapshot.ros_twist.omega;
+    sample.remote_vx = snapshot.remote_twist.vx;
+    sample.remote_vy = snapshot.remote_twist.vy;
+    sample.remote_omega = snapshot.remote_twist.omega;
+
+    sample.target_vx = Chassis.Get_Target_Velocity_X();
+    sample.target_vy = Chassis.Get_Target_Velocity_Y();
+    sample.target_omega = Chassis.Get_Target_Omega();
+    sample.profiled_vx = Chassis.Get_Profiled_Target_Velocity_X();
+    sample.profiled_vy = Chassis.Get_Profiled_Target_Velocity_Y();
+    sample.profiled_omega = Chassis.Get_Profiled_Target_Omega();
+    sample.now_vx = Chassis.Get_Now_Velocity_X();
+    sample.now_vy = Chassis.Get_Now_Velocity_Y();
+    sample.now_omega = Chassis.Get_Now_Omega();
+
+    for (int i = 0; i < chassis_trace::kWheelCount; ++i)
+    {
+        sample.wheels[i].raw_target_omega = Chassis.Get_Raw_Target_Wheel_Omega(i);
+        sample.wheels[i].target_omega = Chassis.Get_Target_Wheel_Omega(i);
+        sample.wheels[i].control_omega = Chassis.Motor_Wheel[i].Get_Control_Omega();
+        sample.wheels[i].now_omega = Chassis.Motor_Wheel[i].Get_Now_Omega();
+        sample.wheels[i].now_torque = Chassis.Motor_Wheel[i].Get_Now_Torque();
+        sample.wheels[i].motor_status = static_cast<int>(Chassis.Motor_Wheel[i].Get_Status());
+        sample.wheels[i].control_status =
+            static_cast<int>(Chassis.Motor_Wheel[i].Get_Now_Control_Status());
+    }
+
+    chassis_trace::Record(sample);
 }
 
 void Class_Robot::_Log_Chassis_Diagnostic(bool ros_cmd_recent,
                                           bool remote_cmd_recent,
                                           ChassisCommandSource source)
 {
-    const uint64_t unhandled = unhandled_can_frames_.load(std::memory_order_relaxed);
-    const char *source_name = "none";
-    switch (source)
-    {
-    case ChassisCommandSource::ROS2:   source_name = "ros2"; break;
-    case ChassisCommandSource::REMOTE: source_name = "remote"; break;
-    case ChassisCommandSource::NONE:   source_name = "none"; break;
-    }
-
-    if (bridge_node_)
-    {
-        RCLCPP_INFO(bridge_node_->get_logger(),
-                    "chassis diag: source=%s remote=%d ros_cmd_recent=%d remote_cmd_recent=%d"
-                    " target=(%.3f, %.3f, %.3f)"
-                    " now=(%.3f, %.3f, %.3f) unhandled_can=%llu",
-                    source_name,
-                    chassis_remote_enabled_ ? 1 : 0,
-                    ros_cmd_recent ? 1 : 0,
-                    remote_cmd_recent ? 1 : 0,
-                    Chassis.Get_Target_Velocity_X(),
-                    Chassis.Get_Target_Velocity_Y(),
-                    Chassis.Get_Target_Omega(),
-                    Chassis.Get_Now_Velocity_X(),
-                    Chassis.Get_Now_Velocity_Y(),
-                    Chassis.Get_Now_Omega(),
-                    static_cast<unsigned long long>(unhandled));
-    }
-    else
-    {
-        std::cout << "[ROBOT] chassis diag"
-                  << " source=" << source_name
-                  << " remote=" << (chassis_remote_enabled_ ? 1 : 0)
-                  << " ros_cmd_recent=" << (ros_cmd_recent ? 1 : 0)
-                  << " remote_cmd_recent=" << (remote_cmd_recent ? 1 : 0)
-                  << " target=(" << Chassis.Get_Target_Velocity_X()
-                  << ", " << Chassis.Get_Target_Velocity_Y()
-                  << ", " << Chassis.Get_Target_Omega() << ")"
-                  << " now=(" << Chassis.Get_Now_Velocity_X()
-                  << ", " << Chassis.Get_Now_Velocity_Y()
-                  << ", " << Chassis.Get_Now_Omega() << ")"
-                  << " unhandled_can=" << unhandled
-                  << std::endl;
-    }
+    (void)ros_cmd_recent;
+    (void)remote_cmd_recent;
+    (void)source;
 }
 
 void Class_Robot::_Lift_Control()
@@ -1219,7 +1210,7 @@ void Class_Robot::_Lift_Control()
     const int64_t now = now_ns();
     const bool remote_cmd_recent =
         snapshot.remote_twist.has_twist && snapshot.remote_twist.last_twist_ns > 0 &&
-        (now - snapshot.remote_twist.last_twist_ns) <= kCmdTimeoutNs;
+        (now - snapshot.remote_twist.last_twist_ns) <= kCmdFreshTimeoutNs;
     const bool buttons_recent_raw =
         snapshot.has_buttons && snapshot.last_button_ns > 0 &&
         (now - snapshot.last_button_ns) <= kButtonTimeoutNs;
@@ -1250,11 +1241,8 @@ void Class_Robot::_Lift_Control()
         _Gripper_Control(buttons_recent, snapshot.button_code);
     }
 
-    auto log_lift_action = [this](const char *msg) {
-        if (bridge_node_)
-            RCLCPP_WARN(bridge_node_->get_logger(), "%s", msg);
-        else
-            std::cerr << "[ROBOT][WARN] " << msg << std::endl;
+    auto log_lift_action = [](const char *msg) {
+        (void)msg;
     };
 
     if (buttons_recent)
@@ -1382,17 +1370,8 @@ void Class_Robot::_Gripper_Control(bool buttons_recent, uint16_t button_code)
 
 void Class_Robot::_Log_Gripper_Action(const char *msg, bool ok)
 {
-    if (bridge_node_)
-    {
-        if (ok)
-            RCLCPP_WARN(bridge_node_->get_logger(), "%s", msg);
-        else
-            RCLCPP_ERROR(bridge_node_->get_logger(), "%s", msg);
-    }
-    else
-    {
-        std::cerr << "[ROBOT][" << (ok ? "WARN" : "ERROR") << "] " << msg << std::endl;
-    }
+    (void)msg;
+    (void)ok;
 }
 
 void Class_Robot::_Send_Odometry()

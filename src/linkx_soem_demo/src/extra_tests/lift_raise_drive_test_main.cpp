@@ -13,7 +13,7 @@
 //        --module front --cycles 1 --forward 0.25 --rod-start -1 --rod-end -15
 //
 // Output:
-//   var_data/lift_raise_drive_test_<timestamp>.csv
+//   var_data/lift/lift_raise_drive_test_<timestamp>.csv
 
 #include <algorithm>
 #include <array>
@@ -99,6 +99,10 @@ enum class TestSuite
     Feedforward,
     SCurve,
     Fast,
+    Speed,
+    Accel,
+    HighAccel,
+    Stability,
     Contact,
 };
 
@@ -174,6 +178,7 @@ struct Options
     bool drive_enable = false;
     FeedforwardMode feedforward_mode = FeedforwardMode::None;
     LiftCommandProfile lift_profile = LiftCommandProfile::Trapezoid;
+    float scurve_peak_velocity_scale = kSCurvePeakVelocityScale;
     float identify_speed = 3.0f;
     float identify_hold_s = 1.2f;
     float identify_breakaway_vel = 0.20f;
@@ -208,6 +213,7 @@ struct TestCase
     FeedforwardMode feedforward_mode = FeedforwardMode::None;
     LiftCommandProfile lift_profile = LiftCommandProfile::Trapezoid;
     bool lift_velocity_ff = false;
+    float scurve_peak_velocity_scale = kSCurvePeakVelocityScale;
 };
 
 struct ModuleCommand
@@ -341,6 +347,7 @@ struct PhaseModuleMetrics
     bool drive_enable = false;
     FeedforwardMode feedforward_mode = FeedforwardMode::None;
     LiftCommandProfile lift_profile = LiftCommandProfile::Trapezoid;
+    float scurve_peak_velocity_scale = kSCurvePeakVelocityScale;
 };
 
 std::vector<PhaseModuleMetrics> st_metrics;
@@ -635,7 +642,7 @@ float profile_distance_duration_s(float distance, Options const &opt)
         return 0.0f;
 
     if (opt.lift_profile == LiftCommandProfile::SCurve)
-        return kSCurvePeakVelocityScale * abs_distance / safe_speed;
+        return opt.scurve_peak_velocity_scale * abs_distance / safe_speed;
 
     return abs_distance / safe_speed;
 }
@@ -702,6 +709,26 @@ bool parse_test_suite(const std::string &text, TestSuite &suite)
         suite = TestSuite::Fast;
         return true;
     }
+    if (text == "speed" || text == "speeds" || text == "speedband" || text == "bands")
+    {
+        suite = TestSuite::Speed;
+        return true;
+    }
+    if (text == "accel" || text == "acc" || text == "accelerate" || text == "aggressive")
+    {
+        suite = TestSuite::Accel;
+        return true;
+    }
+    if (text == "highaccel" || text == "high_accel" || text == "haccel")
+    {
+        suite = TestSuite::HighAccel;
+        return true;
+    }
+    if (text == "stability" || text == "stable" || text == "candidate")
+    {
+        suite = TestSuite::Stability;
+        return true;
+    }
     if (text == "contact" || text == "touch" || text == "force" || text == "load")
     {
         suite = TestSuite::Contact;
@@ -739,6 +766,10 @@ const char *test_suite_name(TestSuite suite)
         case TestSuite::Feedforward: return "ff";
         case TestSuite::SCurve: return "scurve";
         case TestSuite::Fast:   return "fast";
+        case TestSuite::Speed:  return "speed";
+        case TestSuite::Accel:  return "accel";
+        case TestSuite::HighAccel: return "highaccel";
+        case TestSuite::Stability: return "stability";
         case TestSuite::Contact: return "contact";
         default:                return "unknown";
     }
@@ -829,6 +860,54 @@ std::vector<TestCase> build_test_cases(Options const &opt)
             {"fast_s20_kp25_kd16_hold",      20.0f, 25.0f, 1.6f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true},
             {"fast_s20_kp30_kd16_hold",      20.0f, 30.0f, 1.6f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true},
             {"fast_s20_kp25_kd16_friction",  20.0f, 25.0f, 1.6f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::HoldAndFriction, LiftCommandProfile::SCurve, true},
+        };
+    }
+
+    if (opt.suite == TestSuite::Speed)
+    {
+        return {
+            {"speed_low_s03_kp15_kd10_hold",    3.0f, 15.0f, 1.0f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true},
+            {"speed_low_s05_kp20_kd12_hold",    5.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true},
+            {"speed_low_s05_kp15_kd10_hold",    5.0f, 15.0f, 1.0f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true},
+            {"speed_mid_s08_kp20_kd12_hold",    8.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true},
+            {"speed_mid_s10_kp20_kd12_hold",   10.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true},
+            {"speed_mid_s12_kp20_kd12_hold",   12.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true},
+            {"speed_high_s13_kp20_kd12_hold",  13.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true},
+            {"speed_high_s13_kp25_kd12_hold",  13.0f, 25.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true},
+            {"speed_high_s15_kp25_kd16_hold",  15.0f, 25.0f, 1.6f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true},
+        };
+    }
+
+    if (opt.suite == TestSuite::Accel)
+    {
+        return {
+            {"accel_s09_scale160_kp20_kd12",  9.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true, 1.60f},
+            {"accel_s10_scale160_kp20_kd12", 10.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true, 1.60f},
+            {"accel_s10_scale145_kp20_kd12", 10.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true, 1.45f},
+            {"accel_s11_scale145_kp20_kd12", 11.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true, 1.45f},
+            {"accel_s12_scale145_kp20_kd12", 12.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true, 1.45f},
+            {"accel_s10_scale130_kp20_kd12", 10.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true, 1.30f},
+            {"accel_s10_scale145_kp25_kd12", 10.0f, 25.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true, 1.45f},
+        };
+    }
+
+    if (opt.suite == TestSuite::HighAccel)
+    {
+        return {
+            {"haccel_s13_scale175_kp20_kd12", 13.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true, 1.75f},
+            {"haccel_s13_scale160_kp20_kd12", 13.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true, 1.60f},
+            {"haccel_s13_scale145_kp20_kd12", 13.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true, 1.45f},
+            {"haccel_s14_scale175_kp20_kd12", 14.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true, 1.75f},
+            {"haccel_s14_scale160_kp20_kd12", 14.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true, 1.60f},
+            {"haccel_s15_scale175_kp20_kd12", 15.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true, 1.75f},
+        };
+    }
+
+    if (opt.suite == TestSuite::Stability)
+    {
+        return {
+            {"stable_s13_scale1875_kp20_kd12", 13.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true, 1.875f},
+            {"stable_s13_scale175_kp20_kd12",  13.0f, 20.0f, 1.2f, 0.0f, 0.0f, opt.drive_kp, opt.drive_kd, opt.drive_accel, opt.drive_decel, false, FeedforwardMode::Hold, LiftCommandProfile::SCurve, true, 1.75f},
         };
     }
 
@@ -1444,6 +1523,7 @@ void record_metrics_sample(Options const &opt,
         metrics.drive_enable = opt.drive_enable;
         metrics.feedforward_mode = opt.feedforward_mode;
         metrics.lift_profile = opt.lift_profile;
+        metrics.scurve_peak_velocity_scale = opt.scurve_peak_velocity_scale;
 
         metrics.rod_actual.add(rod_actual);
         metrics.rod_error.add(rod_error);
@@ -1959,7 +2039,7 @@ void write_feedforward_summary(std::ostream &os, Options const &opt)
 
 std::string scurve_case_label(const std::string &phase)
 {
-    const std::array<const char *, 20> labels {{
+    const std::array<const char *, 44> labels {{
         "scurve_trap_hold_s05_posonly",
         "scurve_minjerk_hold_s08_posonly",
         "scurve_minjerk_hold_s08_posvel",
@@ -1980,6 +2060,30 @@ std::string scurve_case_label(const std::string &phase)
         "fast_s20_kp25_kd16_hold",
         "fast_s20_kp30_kd16_hold",
         "fast_s20_kp25_kd16_friction",
+        "speed_low_s03_kp15_kd10_hold",
+        "speed_low_s05_kp20_kd12_hold",
+        "speed_low_s05_kp15_kd10_hold",
+        "speed_mid_s08_kp20_kd12_hold",
+        "speed_mid_s10_kp20_kd12_hold",
+        "speed_mid_s12_kp20_kd12_hold",
+        "speed_high_s13_kp20_kd12_hold",
+        "speed_high_s13_kp25_kd12_hold",
+        "speed_high_s15_kp25_kd16_hold",
+        "accel_s09_scale160_kp20_kd12",
+        "accel_s10_scale160_kp20_kd12",
+        "accel_s10_scale145_kp20_kd12",
+        "accel_s11_scale145_kp20_kd12",
+        "accel_s12_scale145_kp20_kd12",
+        "accel_s10_scale130_kp20_kd12",
+        "accel_s10_scale145_kp25_kd12",
+        "haccel_s13_scale175_kp20_kd12",
+        "haccel_s13_scale160_kp20_kd12",
+        "haccel_s13_scale145_kp20_kd12",
+        "haccel_s14_scale175_kp20_kd12",
+        "haccel_s14_scale160_kp20_kd12",
+        "haccel_s15_scale175_kp20_kd12",
+        "stable_s13_scale1875_kp20_kd12",
+        "stable_s13_scale175_kp20_kd12",
     }};
 
     for (const char *label : labels)
@@ -2006,11 +2110,17 @@ struct SCurveAggregate
     double rod_accel_max_abs = 0.0;
     double lift_torque_max_abs = 0.0;
     double lift_torque_ff_max_abs = 0.0;
+    double scurve_peak_velocity_scale = 0.0;
 };
 
 void write_scurve_summary(std::ostream &os, Options const &opt)
 {
-    if (opt.suite != TestSuite::SCurve && opt.suite != TestSuite::Fast)
+    if (opt.suite != TestSuite::SCurve &&
+        opt.suite != TestSuite::Fast &&
+        opt.suite != TestSuite::Speed &&
+        opt.suite != TestSuite::Accel &&
+        opt.suite != TestSuite::HighAccel &&
+        opt.suite != TestSuite::Stability)
         return;
 
     std::map<std::string, SCurveAggregate> aggregates;
@@ -2028,6 +2138,7 @@ void write_scurve_summary(std::ostream &os, Options const &opt)
         agg.label = label;
         agg.module_name = metrics.module_name;
         agg.samples += metrics.rod_error.n;
+        agg.scurve_peak_velocity_scale = metrics.scurve_peak_velocity_scale;
         agg.motion_time_s += metrics.final_t_s;
         agg.rod_error_sum += metrics.rod_error.sum;
         agg.rod_error_sum_sq += metrics.rod_error.sum_sq;
@@ -2049,17 +2160,26 @@ void write_scurve_summary(std::ostream &os, Options const &opt)
 
     os << "\n" << (opt.suite == TestSuite::Fast ?
                    "Fast S-curve tuning comparison" :
+                   opt.suite == TestSuite::Speed ?
+                   "Low/mid/high lift speed tuning comparison" :
+                   opt.suite == TestSuite::Accel ?
+                   "Faster lift speed and S-curve acceleration comparison" :
+                   opt.suite == TestSuite::HighAccel ?
+                   "High-speed faster S-curve acceleration comparison" :
+                   opt.suite == TestSuite::Stability ?
+                   "High-speed stability validation comparison" :
                    "S-curve validation comparison") << "\n"
        << "note: comparison uses raise/retract motion phases only; preposition/stop phases are excluded.\n"
        << "note: minjerk S-curve duration is "
-       << kSCurvePeakVelocityScale
+       << "scurve_scale"
        << " * distance / lift_speed, so lift_speed is peak rod speed.\n"
        << "note: posvel cases command MIT omega target = rod_cmd_velocity * "
        << kLiftMotorToRodRatio << ".\n";
 
-    const std::vector<const char *> labels =
-        (opt.suite == TestSuite::Fast) ?
-        std::vector<const char *> {
+    std::vector<const char *> labels;
+    if (opt.suite == TestSuite::Fast)
+    {
+        labels = {
             "fast_s12_kp20_kd12_hold",
             "fast_s13_kp20_kd12_hold",
             "fast_s14_kp20_kd12_hold",
@@ -2073,8 +2193,55 @@ void write_scurve_summary(std::ostream &os, Options const &opt)
             "fast_s20_kp25_kd16_hold",
             "fast_s20_kp30_kd16_hold",
             "fast_s20_kp25_kd16_friction",
-        } :
-        std::vector<const char *> {
+        };
+    }
+    else if (opt.suite == TestSuite::Speed)
+    {
+        labels = {
+            "speed_low_s03_kp15_kd10_hold",
+            "speed_low_s05_kp20_kd12_hold",
+            "speed_low_s05_kp15_kd10_hold",
+            "speed_mid_s08_kp20_kd12_hold",
+            "speed_mid_s10_kp20_kd12_hold",
+            "speed_mid_s12_kp20_kd12_hold",
+            "speed_high_s13_kp20_kd12_hold",
+            "speed_high_s13_kp25_kd12_hold",
+            "speed_high_s15_kp25_kd16_hold",
+        };
+    }
+    else if (opt.suite == TestSuite::Accel)
+    {
+        labels = {
+            "accel_s09_scale160_kp20_kd12",
+            "accel_s10_scale160_kp20_kd12",
+            "accel_s10_scale145_kp20_kd12",
+            "accel_s11_scale145_kp20_kd12",
+            "accel_s12_scale145_kp20_kd12",
+            "accel_s10_scale130_kp20_kd12",
+            "accel_s10_scale145_kp25_kd12",
+        };
+    }
+    else if (opt.suite == TestSuite::HighAccel)
+    {
+        labels = {
+            "haccel_s13_scale175_kp20_kd12",
+            "haccel_s13_scale160_kp20_kd12",
+            "haccel_s13_scale145_kp20_kd12",
+            "haccel_s14_scale175_kp20_kd12",
+            "haccel_s14_scale160_kp20_kd12",
+            "haccel_s15_scale175_kp20_kd12",
+        };
+    }
+    else if (opt.suite == TestSuite::Stability)
+    {
+        labels = {
+            "stable_s13_scale1875_kp20_kd12",
+            "stable_s13_scale175_kp20_kd12",
+        };
+    }
+    else
+    {
+        labels = {
             "scurve_trap_hold_s05_posonly",
             "scurve_minjerk_hold_s08_posonly",
             "scurve_minjerk_hold_s08_posvel",
@@ -2083,6 +2250,7 @@ void write_scurve_summary(std::ostream &os, Options const &opt)
             "scurve_minjerk_hold_s10_posvel",
             "scurve_minjerk_hold_s12_posvel",
         };
+    }
 
     for (const auto &info : kModuleInfo)
     {
@@ -2103,6 +2271,7 @@ void write_scurve_summary(std::ostream &os, Options const &opt)
 
             const auto &agg = it->second;
             os << " samples=" << agg.samples
+               << " scurve_scale=" << agg.scurve_peak_velocity_scale
                << " motion_time_s=" << agg.motion_time_s
                << " rod_error_mean=" << (agg.rod_error_sum / static_cast<double>(agg.samples))
                << " rod_error_rms=" << std::sqrt(agg.rod_error_sum_sq / static_cast<double>(agg.samples))
@@ -2225,6 +2394,7 @@ void write_summary(Options const &opt)
                << " drive_enable=" << (metrics.drive_enable ? 1 : 0)
                << " feedforward=" << feedforward_mode_name(metrics.feedforward_mode)
                << " lift_profile=" << lift_profile_name(metrics.lift_profile)
+               << " scurve_scale=" << metrics.scurve_peak_velocity_scale
                << "\n";
 
             os << "  DM3519_lift"
@@ -2779,6 +2949,7 @@ void run_test_case(Options const &base_opt,
     opt.feedforward_mode = test_case.feedforward_mode;
     opt.lift_profile = test_case.lift_profile;
     opt.lift_velocity_ff = test_case.lift_velocity_ff;
+    opt.scurve_peak_velocity_scale = test_case.scurve_peak_velocity_scale;
 
     const float rod_range = std::fabs(opt.rod_start - opt.rod_end);
     const float sweep_duration_s =
@@ -2801,6 +2972,7 @@ void run_test_case(Options const &base_opt,
               << " feedforward=" << feedforward_mode_name(opt.feedforward_mode)
               << " profile=" << lift_profile_name(opt.lift_profile)
               << " lift_velocity_ff=" << (opt.lift_velocity_ff ? 1 : 0)
+              << " scurve_scale=" << opt.scurve_peak_velocity_scale
               << " cycles=" << opt.cycles << "\n";
 
     const std::string prefix = test_case.label + "_";
@@ -2860,7 +3032,7 @@ void print_usage(const char *argv0)
         << "Options:\n"
         << "  --ifname IFACE       EtherCAT NIC, default IFNAME env or enp86s0\n"
         << "  --module M           front|rear|both, default both\n"
-        << "  --suite S            lift|identify|ff|scurve|fast|contact|param|single, default lift\n"
+        << "  --suite S            lift|identify|ff|scurve|fast|speed|accel|highaccel|stability|contact|param|single, default lift\n"
         << "  --cycles N           raise/retract cycles per case, default 1\n"
         << "  --rod-start RAD      lift rod start angle, default -1\n"
         << "  --rod-end RAD        lift rod raised angle, default -15\n"
@@ -2870,6 +3042,7 @@ void print_usage(const char *argv0)
         << "  --lift-kp K          DM3519 MIT Kp, default 15\n"
         << "  --lift-kd K          DM3519 MIT Kd, default 1\n"
         << "  --lift-velocity-ff 0|1  command DM3519 MIT velocity target in single suite, default 0\n"
+        << "  --scurve-scale K     S-curve duration scale, smaller means faster accel, default 1.875\n"
         << "  --forward MPS        DM2325 diff-drive forward command, default 0.25\n"
         << "  --yaw RADS           DM2325 diff-drive yaw command, default 0\n"
         << "  --drive-kp K         DM2325 MIT Kp, default 0\n"
@@ -2892,6 +3065,10 @@ void print_usage(const char *argv0)
         << "                       ff suite runs PD-only, hold-ff, hold+friction-ff at speed 5\n"
         << "                       scurve suite compares pos-only and pos+velocity S-curve profiles at speed 8/9/10/12\n"
         << "                       fast suite tunes high-speed pos+velocity S-curve at speed 12/13/14/15/18/20\n"
+        << "                       speed suite retests lift-only low/mid/high speed bands without changing rod range\n"
+        << "                       accel suite retests faster speed plus smaller S-curve duration scale\n"
+        << "                       highaccel suite retests speed >12 with smaller S-curve duration scale\n"
+        << "                       stability suite repeats the best speed >12 candidates\n"
         << "  --sample-hz HZ       CSV sample rate, default 100\n"
         << "  --record 0|1         write CSV, default 1\n"
         << "  --csv PATH           CSV path\n"
@@ -2931,7 +3108,7 @@ Options parse_options(int argc, char **argv)
     if (!parse_test_suite(suite_text, suite))
     {
         std::cerr << "[LIFT-TEST] invalid --suite '" << suite_text
-                  << "', expected lift|identify|ff|scurve|fast|contact|param|single\n";
+                  << "', expected lift|identify|ff|scurve|fast|speed|accel|highaccel|stability|contact|param|single\n";
         print_usage(argv[0]);
         std::exit(1);
     }
@@ -2968,6 +3145,10 @@ Options parse_options(int argc, char **argv)
     opt.lift_velocity_ff = parse_bool(cli_get(argc, argv, "lift-velocity-ff",
                                               std::to_string(env_i("LIFT_TEST_LIFT_VELOCITY_FF", opt.lift_velocity_ff ? 1 : 0)).c_str()),
                                       opt.lift_velocity_ff);
+    opt.scurve_peak_velocity_scale =
+        std::strtof(cli_get(argc, argv, "scurve-scale",
+                            std::to_string(env_f("LIFT_TEST_SCURVE_SCALE", opt.scurve_peak_velocity_scale)).c_str()),
+                    nullptr);
     opt.forward_m_s = std::strtof(cli_get(argc, argv, "forward",
                                           std::to_string(env_f("LIFT_TEST_FORWARD", opt.forward_m_s)).c_str()),
                                   nullptr);
@@ -3040,6 +3221,10 @@ Options parse_options(int argc, char **argv)
         opt.suite == TestSuite::Feedforward ||
         opt.suite == TestSuite::SCurve ||
         opt.suite == TestSuite::Fast ||
+        opt.suite == TestSuite::Speed ||
+        opt.suite == TestSuite::Accel ||
+        opt.suite == TestSuite::HighAccel ||
+        opt.suite == TestSuite::Stability ||
         opt.suite == TestSuite::Contact)
     {
         if (!lift_kp_override)
@@ -3065,6 +3250,7 @@ Options parse_options(int argc, char **argv)
     opt.lift_speed = clamp_float(opt.lift_speed, 0.1f, kLiftRodMaxSpeed);
     opt.lift_kp = clamp_float(opt.lift_kp, 0.0f, 500.0f);
     opt.lift_kd = clamp_float(opt.lift_kd, 0.0f, 5.0f);
+    opt.scurve_peak_velocity_scale = clamp_float(opt.scurve_peak_velocity_scale, 1.0f, 2.5f);
     opt.forward_m_s = clamp_float(opt.forward_m_s, -kDriveMaxForward, kDriveMaxForward);
     opt.yaw_rad_s = clamp_float(opt.yaw_rad_s, -kDriveMaxYaw, kDriveMaxYaw);
     opt.drive_kp = clamp_float(opt.drive_kp, 0.0f, 500.0f);
@@ -3087,9 +3273,9 @@ Options parse_options(int argc, char **argv)
     mkdir("var_data", 0755);
     const std::string ts = timestamp_string();
     const std::string default_csv =
-        "var_data/lift_raise_drive_test_" + ts + ".csv";
+        "var_data/lift/lift_raise_drive_test_" + ts + ".csv";
     const std::string default_summary =
-        "var_data/lift_raise_drive_test_" + ts + "_summary.txt";
+        "var_data/lift/lift_raise_drive_test_" + ts + "_summary.txt";
     opt.csv_path = cli_get(argc, argv, "csv", default_csv.c_str());
     opt.summary_path = cli_get(argc, argv, "summary", default_summary.c_str());
     return opt;
@@ -3185,6 +3371,7 @@ int main(int argc, char **argv)
                   << " feedforward=" << feedforward_mode_name(test_case.feedforward_mode)
                   << " profile=" << lift_profile_name(test_case.lift_profile)
                   << " lift_velocity_ff=" << (test_case.lift_velocity_ff ? 1 : 0)
+                  << " scurve_scale=" << test_case.scurve_peak_velocity_scale
                   << "\n";
     }
 

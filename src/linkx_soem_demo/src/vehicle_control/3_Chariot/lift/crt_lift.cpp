@@ -10,6 +10,10 @@ namespace
 constexpr int kLiftHoldPointCount = 5;
 constexpr float kLiftControlDtS = 0.002f;
 constexpr float kLiftMotorToRodRatio = 3.0f;
+constexpr float kLiftRetractMotorAngle = -0.3f;
+constexpr float kLiftRaiseMotorAngle = -24.0f;
+constexpr float kLiftRetractRodAngle = kLiftRetractMotorAngle / kLiftMotorToRodRatio;
+constexpr float kLiftRaiseRodAngle = kLiftRaiseMotorAngle / kLiftMotorToRodRatio;
 constexpr float kLiftSCurvePeakVelocityScale = 1.875f;
 constexpr uint8_t kLiftToFCanChannel = 2;
 constexpr uint8_t kLiftToFOfflineTicks = 5;  // 5 * 100ms
@@ -432,20 +436,22 @@ void Class_Chariot_Lift::Init_Motor_Params()
     };
 
     Lift_Params[CHARIOT_LIFT_MODULE_FRONT] = {
-        .retract_angle = -0.1f,
-        .raise_angle   = -8.0f,
+        .retract_angle = kLiftRetractRodAngle,
+        .raise_angle   = kLiftRaiseRodAngle,
         .max_speed     = 13.0f,
         .kp            = 20.0f,
         .kd            = 1.2f,
     };
 
     Lift_Params[CHARIOT_LIFT_MODULE_REAR] = {
-        .retract_angle = -0.1f,
-        .raise_angle   = -8.0f,
+        .retract_angle = kLiftRetractRodAngle,
+        .raise_angle   = kLiftRaiseRodAngle,
         .max_speed     = 13.0f,
         .kp            = 20.0f,
         .kd            = 1.2f,
     };
+
+    Stair_Raise_Angle = kLiftRaiseRodAngle;
 
     Smooth_Lift_Angle[CHARIOT_LIFT_MODULE_FRONT] =
         Lift_Params[CHARIOT_LIFT_MODULE_FRONT].retract_angle;

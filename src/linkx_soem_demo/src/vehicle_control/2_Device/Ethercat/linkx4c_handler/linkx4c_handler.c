@@ -83,11 +83,6 @@ bool linkx_hw_wakeup(linkx_t *linkx)
         ch_ok[ch] = ok;
         all_ok = all_ok && ok;
     }
-    printf("[LinkX] wakeup: CAN0=%s CAN1=%s CAN2=%s CAN3=%s\n",
-           ch_ok[0] ? "OK" : "FAIL",
-           ch_ok[1] ? "OK" : "FAIL",
-           ch_ok[2] ? "OK" : "FAIL",
-           ch_ok[3] ? "OK" : "FAIL");
     return all_ok;
 }
 
@@ -198,7 +193,6 @@ bool linkx_set_can_baudrate(linkx_t *linkx, uint8_t ch, uint8_t fd_en,
     if (wkc_count == 11) {
         return true;
     } else {
-        printf("[LinkX][WARN] CAN%d timing config failed (%d/11 SDO writes)\n", ch, wkc_count);
         return false;
     }
 }

@@ -35,8 +35,6 @@ public:
 
 private:
     std::unique_ptr<JoystickMapper> mapper_;
-    uint16_t last_logged_button_ = 0xFFFFU;
-    uint64_t last_logged_button_mask_ = ~0ULL;
 
     rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr sub_joy_;
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr pub_chassis_;
@@ -53,24 +51,6 @@ private:
         uint16_t button_data = mapper_->processButtons(msg->axes, msg->buttons);
         publishButtonMsg(button_data);
 
-        uint64_t button_mask = 0ULL;
-        for (size_t i = 0; i < msg->buttons.size() && i < 64U; ++i)
-        {
-            if (msg->buttons[i] != 0)
-                button_mask |= (1ULL << i);
-        }
-
-        if (button_data != last_logged_button_ || button_mask != last_logged_button_mask_)
-        {
-            last_logged_button_ = button_data;
-            last_logged_button_mask_ = button_mask;
-            RCLCPP_WARN(this->get_logger(),
-                        "F710 button decoded: code=0x%04X raw_mask=0x%016llX axes=%zu buttons=%zu",
-                        static_cast<unsigned>(button_data),
-                        static_cast<unsigned long long>(button_mask),
-                        msg->axes.size(),
-                        msg->buttons.size());
-        }
     }
 
     void publishChassisMsg(const ChassisCommand &data)

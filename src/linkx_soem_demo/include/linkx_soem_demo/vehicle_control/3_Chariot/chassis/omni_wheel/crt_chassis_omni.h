@@ -14,6 +14,12 @@
 /* 轮毂中心到底盘旋转中心距离（m）= 246.21mm */
 #define Omni_Wheel_To_Core_Distance_Define  0.24621f
 
+/* DM3519 实际减速箱为 268:17，当前电机固件仍按 19:1 解释速度命令/反馈 */
+#define OMNI_WHEEL_GEAR_RATIO_ACTUAL        (268.0f / 17.0f)
+#define OMNI_WHEEL_GEAR_RATIO_CONFIGURED    19.0f
+#define OMNI_WHEEL_COMMAND_GEAR_SCALE       (OMNI_WHEEL_GEAR_RATIO_ACTUAL / OMNI_WHEEL_GEAR_RATIO_CONFIGURED)
+#define OMNI_WHEEL_FEEDBACK_GEAR_SCALE      (OMNI_WHEEL_GEAR_RATIO_CONFIGURED / OMNI_WHEEL_GEAR_RATIO_ACTUAL)
+
 /* 整车最大线/角速度 */
 #define MAX_OMNI_CHASSIS_SPEED              5.0f
 #define MAX_OMNI_CHASSIS_OMEGA              10.0f
@@ -31,6 +37,8 @@
 #define OMNI_WHEEL_ACCEL_FILTER_ALPHA       0.25f
 #define OMNI_WHEEL_TORQUE_FF_LIMIT_NM       1.5f
 #define OMNI_WHEEL_RELIABLE_OMEGA_LIMIT     80.0f
+#define OMNI_WHEEL_BREAKAWAY_OMEGA_RAD_S    2.0f
+#define OMNI_WHEEL_BREAKAWAY_RATIO          0.90f
 
 /**
  * @brief 全向轮单轮参数
@@ -46,6 +54,7 @@ struct OmniWheelParams
     float wheel_dynamic_friction;  // 中低速动摩擦补偿力矩 (N·m)
     float wheel_rotor_inertia;     // 轮向等效转动惯量 (kg·m²)
     float wheel_feedforward_scale; // 静摩擦/惯量前馈比例
+    float wheel_breakaway_torque;  // 地面低速起步附加力矩 (N·m)
     float wheel_accel_limit;       // 轮速梯形加速上限 (rad/s²)
     float wheel_decel_limit;       // 轮速梯形减速/换向上限 (rad/s²)
 };

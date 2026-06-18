@@ -1,4 +1,3 @@
-#include <iostream>
 #include <cstdio>
 #include <signal.h>
 #include <string>
@@ -12,7 +11,6 @@ extern ecat_master_t master;
  * @brief 信号处理函数，用于优雅地关闭 EtherCAT 主站
  */
 void signal_handler(int /*sig*/) {
-    std::cout << "\n[MAIN] Termination signal received. Shutting down..." << std::endl;
     master.is_running = false;
 }
 
@@ -31,14 +29,12 @@ int main(int argc, char *argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
-    std::cout << "[MAIN] Robot Control System (EtherCAT/LinkX), ifname=" << ifname << std::endl;
-
     // 启动机器人的核心控制任务
     // 该函数在 task.cpp 中实现，是阻塞运行的
     try {
         Robot_Control_Loop(ifname.c_str());
     } catch (const std::exception& e) {
-        std::cerr << "[FATAL] Exception: " << e.what() << std::endl;
+        (void)e;
         return -1;
     }
     

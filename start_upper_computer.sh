@@ -19,7 +19,7 @@ set -euo pipefail
 WS_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "${WS_DIR}"
 
-IFNAME="${IFNAME:-enp86s0}"
+IFNAME="${IFNAME:-enp4s0}"
 USE_SUDO="true"
 START_VEHICLE="true"
 GIMBAL="false"
@@ -104,7 +104,7 @@ fi
 echo "[START] ifname=${IFNAME} vehicle=${START_VEHICLE} gimbal=${GIMBAL} sudo=${USE_SUDO}"
 TAIL_PID=""
 if [[ "${START_VEHICLE}" == "true" ]]; then
-    mkdir -p var_data
+    mkdir -p var_data/terminal var_data/tof var_data/chassis_trace var_data/omni var_data/lift var_data/calibration
     if [[ ! -w var_data ]]; then
         if [[ "${USE_SUDO}" == "true" ]]; then
             echo "[SETUP] fixing var_data ownership for runtime logs..."
@@ -114,9 +114,9 @@ if [[ "${START_VEHICLE}" == "true" ]]; then
             exit 1
         fi
     fi
-    : > var_data/ops_terminal.log
-    echo "[MONITOR] tailing ToF feedback: var_data/ops_terminal.log"
-    tail -n 0 -F var_data/ops_terminal.log &
+    : > var_data/terminal/ops_terminal.log
+    echo "[MONITOR] tailing ToF feedback: var_data/terminal/ops_terminal.log"
+    tail -n 0 -F var_data/terminal/ops_terminal.log &
     TAIL_PID="$!"
     trap 'if [[ -n "${TAIL_PID}" ]]; then kill "${TAIL_PID}" >/dev/null 2>&1 || true; fi' EXIT INT TERM
 fi

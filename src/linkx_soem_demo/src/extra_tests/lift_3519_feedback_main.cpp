@@ -200,9 +200,7 @@ bool module_selected(ModuleSelection selection, Enum_Chariot_Lift_Module module)
 
 bool extra_motor_selected(ModuleSelection selection)
 {
-    return selection == ModuleSelection::Both ||
-           selection == ModuleSelection::Front ||
-           selection == ModuleSelection::Extra07;
+    return selection == ModuleSelection::Extra07;
 }
 
 Class_Motor_DM_Normal &lift_motor(Enum_Chariot_Lift_Module module)
@@ -618,7 +616,7 @@ void print_usage(const char *argv0)
         << "Usage:\n"
         << "  " << argv0 << " [--ifname enp86s0] [--module rear|front|front07|both]\n"
         << "        [--print-hz 10] [--duration 0] [--enable 1] [--exit-on-stop 1]\n"
-        << "        [--record 0|1] [--record-path var_data/lift_3519_feedback_log.csv]\n"
+        << "        [--record 0|1] [--record-path var_data/lift/lift_3519_feedback_log.csv]\n"
         << "        [--record-hz 50]\n\n"
         << "Notes:\n"
         << "  duration=0 keeps running until Ctrl-C.\n"
@@ -708,7 +706,7 @@ int main(int argc, char **argv)
         argv,
         "record-path",
         std::getenv("LIFT3519_RECORD_PATH") ? std::getenv("LIFT3519_RECORD_PATH") :
-                                              "var_data/lift_3519_feedback_log.csv");
+                                              "var_data/lift/lift_3519_feedback_log.csv");
     float record_hz = parse_float(
         cli_value(argc,
                   argv,
@@ -730,13 +728,20 @@ int main(int argc, char **argv)
         std::cout << "  RECORD_PATH   : " << record_path << "\n"
                   << "  RECORD_HZ     : " << record_hz << "\n";
     }
-    std::cout << "  GEAR          : motor:rod = 3:1, rod = motor / 3\n"
-              << "  EXTRA MOTOR   : " << kExtraMotorName
-              << " CAN" << static_cast<int>(kExtraMotorChannel)
-              << " Tx 0x" << std::hex << std::uppercase << static_cast<int>(kExtraMotorTxId)
-              << " Rx 0x" << static_cast<int>(kExtraMotorRxId)
-              << std::dec << "\n"
-              << "===============================================\n";
+    std::cout << "  GEAR          : motor:rod = 3:1, rod = motor / 3\n";
+    if (module_selection == ModuleSelection::Extra07)
+    {
+        std::cout << "  TARGET MOTOR  : " << kExtraMotorName
+                  << " CAN" << static_cast<int>(kExtraMotorChannel)
+                  << " Tx 0x" << std::hex << std::uppercase << static_cast<int>(kExtraMotorTxId)
+                  << " Rx 0x" << static_cast<int>(kExtraMotorRxId)
+                  << std::dec << "\n";
+    }
+    else
+    {
+        std::cout << "  TARGET MOTORS : front CAN0 Tx 0x05 Rx 0x15; rear CAN1 Tx 0x05 Rx 0x15\n";
+    }
+    std::cout << "===============================================\n";
 
     print_interface_preflight(ifname);
 

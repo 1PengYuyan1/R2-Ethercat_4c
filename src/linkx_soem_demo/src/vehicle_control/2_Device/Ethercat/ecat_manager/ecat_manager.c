@@ -6,15 +6,24 @@
 
 static void ecat_dump_slave_states(ecat_master_t *master)
 {
+    if (!master)
+        return;
+
     ecx_readstate(&master->ctx);
-    for (int i = 1; i <= master->ctx.slavecount; i++)
+    printf("[ECAT] slave_count=%d expected_wkc=%d\n",
+           master->ctx.slavecount,
+           master->expected_wkc);
+
+    for (int i = 1; i <= master->ctx.slavecount; ++i)
     {
-        uint16_t al = master->ctx.slavelist[i].ALstatuscode;
-        printf("[ECAT] Slave %d state=0x%02x AL=0x%04X (%s)\n",
+        printf("[ECAT] slave %d name='%s' state=0x%02x AL=0x%04x (%s) obits=%d ibits=%d\n",
                i,
+               master->ctx.slavelist[i].name,
                master->ctx.slavelist[i].state,
-               al,
-               ec_ALstatuscode2string(al));
+               master->ctx.slavelist[i].ALstatuscode,
+               ec_ALstatuscode2string(master->ctx.slavelist[i].ALstatuscode),
+               master->ctx.slavelist[i].Obits,
+               master->ctx.slavelist[i].Ibits);
     }
 }
 
@@ -29,29 +38,26 @@ bool ecat_master_init(ecat_master_t *master, const char *ifname)
     master->consecutive_wkc_errors = 0;
     master->is_running = false;
 
-    printf("[ECAT] init: adapter=%s\n", ifname);
     if (!ecx_init(&master->ctx, ifname))
     {
-        printf("[ECAT][ERROR] failed to init adapter %s\n", ifname);
+        printf("[ECAT] ecx_init failed for interface '%s'. Check interface name, root/CAP_NET_RAW permission, and NIC availability.\n",
+               ifname);
         return false;
     }
 
     if (ecx_config_init(&master->ctx) <= 0)
     {
-        printf("[ECAT][ERROR] no slaves found on the bus\n");
+        printf("[ECAT] ecx_config_init found no EtherCAT slaves on '%s'. Check cable, LinkX power, and that the EtherCAT cable is on the correct NIC.\n",
+               ifname);
         return false;
     }
+
+    printf("[ECAT] found %d slave(s) on '%s'\n", master->ctx.slavecount, ifname);
 
     // 1. 映射 IO 数据 (告诉系统报文有多长)
     ecx_config_map_group(&master->ctx, master->iomap, 0);
     master->expected_wkc = (master->ctx.grouplist[0].outputsWKC * 2) +
                            master->ctx.grouplist[0].inputsWKC;
-    printf("[ECAT] slaves=%d expected_wkc=%d (out=%u in=%u)\n",
-           master->ctx.slavecount,
-           master->expected_wkc,
-           master->ctx.grouplist[0].outputsWKC,
-           master->ctx.grouplist[0].inputsWKC);
-
     // DC 核心功能 ：对表与计算延迟
     // 必须放在 IO 映射之后，状态机检查之前！
     ecx_configdc(&master->ctx);
@@ -66,13 +72,13 @@ bool ecat_master_init(ecat_master_t *master, const char *ifname)
     //     // 激活第 i 个从站的 Sync0 中断
     //     ecx_dcsync0(&master->ctx, i, TRUE, cycle_time_ns, shift_time_ns);
     // }
-    // printf("[ECAT] DC and Sync0 configured for %d slaves.\n", master->ctx.slavecount);
-
     // 检查从站状态
     int state = ecx_statecheck(&master->ctx, 0, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE * 2);
     if (state != EC_STATE_SAFE_OP)
     {
-        printf("[ECAT][ERROR] not all slaves reached SAFE_OP (state=0x%x)\n", state);
+        printf("[ECAT] SAFE_OP statecheck failed: requested=0x%02x got=0x%02x\n",
+               EC_STATE_SAFE_OP,
+               state);
         ecat_dump_slave_states(master);
         return false;
     }
@@ -98,8 +104,6 @@ int ecat_master_sync(ecat_master_t *master)
         if (master->consecutive_wkc_errors == 1 ||
             (master->consecutive_wkc_errors % ECAT_WKC_ERROR_LOG_PERIOD) == 0)
         {
-            printf("[ECAT][WKC] wkc=%d expected=%d consecutive_errors=%d\n",
-                   wkc, master->expected_wkc, master->consecutive_wkc_errors);
             ecat_dump_slave_states(master);
         }
     }
@@ -114,8 +118,6 @@ int ecat_master_sync(ecat_master_t *master)
 // 安全切换到 OP 状态（含看门狗预热逻辑）
 bool ecat_master_bring_online(ecat_master_t *master)
 {
-    printf("[ECAT] state: requesting OP\n");
-
     // 按 SOEM 推荐流程：先交换若干帧过程数据，避免 SAFE_OP->OP 时输出无效导致拒绝切换
     for (int i = 0; i < 5; i++)
     {
@@ -138,12 +140,10 @@ bool ecat_master_bring_online(ecat_master_t *master)
 
     if (master->ctx.slavelist[0].state == EC_STATE_OPERATIONAL)
     {
-        printf("[ECAT] state: OP online\n");
         return true;
     }
     else
     {
-        printf("[ECAT][ERROR] failed to reach OP state (state=0x%x)\n", master->ctx.slavelist[0].state);
         ecat_dump_slave_states(master);
 
         return false;

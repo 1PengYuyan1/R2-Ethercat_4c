@@ -1,5 +1,4 @@
 #include "rt_timing.h"
-#include <stdio.h>
 #include <inttypes.h>
 
 void sync_absolute_time(struct timespec *ts, int cycle_ns) 
@@ -25,9 +24,7 @@ void analyze_loop_frequency(struct timespec start_ts, int warn_threshold_ns)
     
     if (dt_ns > max_dt_ns) max_dt_ns = dt_ns; 
     
-    if (dt_ns > warn_threshold_ns) {
-        fprintf(stderr, "[RT][WARN] high jitter: loop=%" PRId64 " ns\n", dt_ns);
-    }
+    (void)warn_threshold_ns;
     
     if (++loop_count >= 1000) {
         max_dt_ns = 0; 

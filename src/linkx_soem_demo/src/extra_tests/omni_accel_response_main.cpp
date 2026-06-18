@@ -16,8 +16,8 @@
 //        --speeds 10,30,60 --duration 2.5 --settle 1.0 --reach-frac 0.95
 //
 // Output:
-//   var_data/omni_accel_response_<timestamp>.csv
-//   var_data/omni_accel_summary_<timestamp>.txt
+//   var_data/omni/omni_accel_response_<timestamp>.csv
+//   var_data/omni/omni_accel_summary_<timestamp>.txt
 
 #include <algorithm>
 #include <array>
@@ -176,6 +176,17 @@ void on_signal(int)
 {
     st_running.store(false);
     st_master.is_running = false;
+}
+
+float actual_wheel_omega(int wheel)
+{
+    return st_chassis.Motor_Wheel[wheel].Get_Now_Omega() *
+           OMNI_WHEEL_FEEDBACK_GEAR_SCALE;
+}
+
+float firmware_command_omega(float wheel_omega)
+{
+    return wheel_omega * OMNI_WHEEL_COMMAND_GEAR_SCALE;
 }
 
 float env_f(const char *name, float fallback)
@@ -407,9 +418,10 @@ Options parse_options(int argc, char **argv)
     opt.sample_hz = std::max(1, opt.sample_hz);
 
     mkdir("var_data", 0755);
+    mkdir("var_data/omni", 0755);
     const std::string ts = timestamp_string();
-    const std::string default_csv = "var_data/omni_accel_response_" + ts + ".csv";
-    const std::string default_summary = "var_data/omni_accel_summary_" + ts + ".txt";
+    const std::string default_csv = "var_data/omni/omni_accel_response_" + ts + ".csv";
+    const std::string default_summary = "var_data/omni/omni_accel_summary_" + ts + ".txt";
     opt.csv_path = cli_get(argc, argv, "csv", default_csv.c_str());
     opt.summary_path = cli_get(argc, argv, "summary", default_summary.c_str());
     return opt;
@@ -594,7 +606,7 @@ void apply_direct_targets()
         const float kp = std::isfinite(st_cmd.kp_override) ? st_cmd.kp_override : p.wheel_kp;
         const float kd = std::isfinite(st_cmd.kd_override) ? st_cmd.kd_override : p.wheel_kd;
         motor.Set_Control_Method(Motor_DM_Control_Method_NORMAL_MIT);
-        motor.Set_Control_Maintain_Postion(0.0f, target, torque_ff, kp, kd);
+        motor.Set_Control_Maintain_Postion(0.0f, firmware_command_omega(target), torque_ff, kp, kd);
     }
 
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
@@ -711,7 +723,7 @@ void write_csv_sample(std::ofstream &csv,
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
         csv << "," << trial.wheel[i].target_omega;
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
-        csv << "," << st_chassis.Motor_Wheel[i].Get_Now_Omega();
+        csv << "," << actual_wheel_omega(i);
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
         csv << "," << accel[i];
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
@@ -772,7 +784,7 @@ TrialResult run_trial(const Options &opt,
 
     std::array<float, OMNI_WHEEL_NUM> prev_omega {};
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
-        prev_omega[i] = st_chassis.Motor_Wheel[i].Get_Now_Omega();
+        prev_omega[i] = actual_wheel_omega(i);
 
     std::array<int, OMNI_WHEEL_NUM> hold_count {};
     std::array<float, OMNI_WHEEL_NUM> candidate_time {};
@@ -800,7 +812,7 @@ TrialResult run_trial(const Options &opt,
 
         for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
         {
-            const float omega = st_chassis.Motor_Wheel[i].Get_Now_Omega();
+            const float omega = actual_wheel_omega(i);
             accel[i] = (omega - prev_omega[i]) * 1000.0f;
             prev_omega[i] = omega;
 
@@ -855,7 +867,7 @@ TrialResult run_trial(const Options &opt,
             {
                 if (!trial.wheel[i].commanded)
                     continue;
-                std::cout << " W" << i << "=" << st_chassis.Motor_Wheel[i].Get_Now_Omega();
+                std::cout << " W" << i << "=" << actual_wheel_omega(i);
                 if (trial.wheel[i].reached)
                     std::cout << "(hit)";
             }

@@ -12,8 +12,8 @@
 //        --speed 0.35 --duration 5 --settle 1.0 --analysis-delay 1.0
 //
 // Output:
-//   var_data/omni_motion_record_<timestamp>.csv
-//   var_data/omni_motion_summary_<timestamp>.txt
+//   var_data/omni/omni_motion_record_<timestamp>.csv
+//   var_data/omni/omni_motion_summary_<timestamp>.txt
 
 #include <algorithm>
 #include <array>
@@ -380,8 +380,8 @@ void run_for_ms(uint32_t &tick, uint32_t ms)
 
 float expected_wheel_omega(int i, float vx, float vy, float omega)
 {
-    const float wheel_linear = -vx * std::sin(kWheelTheta[i]) +
-                                vy * std::cos(kWheelTheta[i]) +
+    const float wheel_linear = -vx * std::sin(kWheelTheta[i]) -
+                                vy * std::cos(kWheelTheta[i]) -
                                 omega * Omni_Wheel_To_Core_Distance_Define;
     return (wheel_linear / Omni_Wheel_Radius_Define) *
            st_chassis.wheel_params_[i].wheel_direction *
@@ -844,8 +844,8 @@ Options parse_options(int argc, char **argv)
 
     mkdir("var_data", 0755);
     const std::string ts = timestamp_string();
-    opt.csv_path = cli_get(argc, argv, "csv", ("var_data/omni_motion_record_" + ts + ".csv").c_str());
-    opt.summary_path = cli_get(argc, argv, "summary", ("var_data/omni_motion_summary_" + ts + ".txt").c_str());
+    opt.csv_path = cli_get(argc, argv, "csv", ("var_data/omni/omni_motion_record_" + ts + ".csv").c_str());
+    opt.summary_path = cli_get(argc, argv, "summary", ("var_data/omni/omni_motion_summary_" + ts + ".txt").c_str());
 
     opt.startup_window_s = std::max(0.05f, opt.startup_window_s);
     opt.reach_frac = clamp_float(opt.reach_frac, 0.5f, 1.2f);
