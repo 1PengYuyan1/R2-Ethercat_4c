@@ -11,9 +11,16 @@ constexpr int kLiftHoldPointCount = 5;
 constexpr float kLiftControlDtS = 0.002f;
 constexpr float kLiftMotorToRodRatio = 3.0f;
 constexpr float kLiftRetractMotorAngle = -0.3f;
-constexpr float kLiftRaiseMotorAngle = -24.0f;
+constexpr float kLiftLegacyRaiseRodAngle = -8.0f;
+constexpr float kLiftLegacyDeepRaiseRodAngle = -14.5f;
+constexpr float kLiftFrontRaiseMotorAngle = -24.185f;
+constexpr float kLiftFrontDeepRaiseMotorAngle = -43.33f;
+constexpr float kLiftRearRaiseMotorAngle = -23.881f;
+constexpr float kLiftRearDeepRaiseMotorAngle = -43.38f;
+constexpr float kLiftRaiseCalibrationEpsilon = 1e-3f;
 constexpr float kLiftRetractRodAngle = kLiftRetractMotorAngle / kLiftMotorToRodRatio;
-constexpr float kLiftRaiseRodAngle = kLiftRaiseMotorAngle / kLiftMotorToRodRatio;
+constexpr float kLiftFrontRaiseRodAngle = kLiftFrontRaiseMotorAngle / kLiftMotorToRodRatio;
+constexpr float kLiftRearRaiseRodAngle = kLiftRearRaiseMotorAngle / kLiftMotorToRodRatio;
 constexpr float kLiftSCurvePeakVelocityScale = 1.875f;
 constexpr uint8_t kLiftToFCanChannel = 2;
 constexpr uint8_t kLiftToFOfflineTicks = 5;  // 5 * 100ms
@@ -296,6 +303,25 @@ const StairStateConfig *Find_Stair_State_Config(Enum_Chariot_Lift_Stair_State st
     return nullptr;
 }
 
+float Calibrated_Lift_Raise_Rod_Angle(Enum_Chariot_Lift_Module module, float requested_rod_angle)
+{
+    if (fabsf(requested_rod_angle - kLiftLegacyRaiseRodAngle) <= kLiftRaiseCalibrationEpsilon)
+    {
+        return (module == CHARIOT_LIFT_MODULE_FRONT) ?
+            kLiftFrontRaiseMotorAngle / kLiftMotorToRodRatio :
+            kLiftRearRaiseMotorAngle / kLiftMotorToRodRatio;
+    }
+
+    if (fabsf(requested_rod_angle - kLiftLegacyDeepRaiseRodAngle) <= kLiftRaiseCalibrationEpsilon)
+    {
+        return (module == CHARIOT_LIFT_MODULE_FRONT) ?
+            kLiftFrontDeepRaiseMotorAngle / kLiftMotorToRodRatio :
+            kLiftRearDeepRaiseMotorAngle / kLiftMotorToRodRatio;
+    }
+
+    return requested_rod_angle;
+}
+
 bool Match_Lift_ToF_Sensor(uint32_t can_id_std, Enum_Chariot_Lift_ToF_Sensor &sensor)
 {
     for (const auto &item : kLiftToFCanMap)
@@ -437,7 +463,7 @@ void Class_Chariot_Lift::Init_Motor_Params()
 
     Lift_Params[CHARIOT_LIFT_MODULE_FRONT] = {
         .retract_angle = kLiftRetractRodAngle,
-        .raise_angle   = kLiftRaiseRodAngle,
+        .raise_angle   = kLiftFrontRaiseRodAngle,
         .max_speed     = 13.0f,
         .kp            = 20.0f,
         .kd            = 1.2f,
@@ -445,13 +471,16 @@ void Class_Chariot_Lift::Init_Motor_Params()
 
     Lift_Params[CHARIOT_LIFT_MODULE_REAR] = {
         .retract_angle = kLiftRetractRodAngle,
-        .raise_angle   = kLiftRaiseRodAngle,
+        .raise_angle   = kLiftRearRaiseRodAngle,
         .max_speed     = 13.0f,
         .kp            = 20.0f,
         .kd            = 1.2f,
     };
 
-    Stair_Raise_Angle = kLiftRaiseRodAngle;
+    Stair_Raise_Angle[CHARIOT_LIFT_MODULE_FRONT] =
+        Lift_Params[CHARIOT_LIFT_MODULE_FRONT].raise_angle;
+    Stair_Raise_Angle[CHARIOT_LIFT_MODULE_REAR] =
+        Lift_Params[CHARIOT_LIFT_MODULE_REAR].raise_angle;
 
     Smooth_Lift_Angle[CHARIOT_LIFT_MODULE_FRONT] =
         Lift_Params[CHARIOT_LIFT_MODULE_FRONT].retract_angle;
@@ -741,9 +770,7 @@ void Class_Chariot_Lift::Send_Enable_Burst()
 void Class_Chariot_Lift::Start_Stair_Up(float raise_angle)
 {
     Set_Control_Type(CHARIOT_LIFT_CONTROL_ENABLE);
-    Lift_Params[CHARIOT_LIFT_MODULE_FRONT].raise_angle = raise_angle;
-    Lift_Params[CHARIOT_LIFT_MODULE_REAR].raise_angle = raise_angle;
-    Stair_Raise_Angle = raise_angle;
+    Set_Raise_Angle(raise_angle);
     Reset_Stair_Attitude_Correction();
     Enter_Stair_State(CHARIOT_LIFT_STAIR_UP_RAISE_ALL);
 }
@@ -751,9 +778,7 @@ void Class_Chariot_Lift::Start_Stair_Up(float raise_angle)
 void Class_Chariot_Lift::Start_Stair_Down(float raise_angle)
 {
     Set_Control_Type(CHARIOT_LIFT_CONTROL_ENABLE);
-    Lift_Params[CHARIOT_LIFT_MODULE_FRONT].raise_angle = raise_angle;
-    Lift_Params[CHARIOT_LIFT_MODULE_REAR].raise_angle = raise_angle;
-    Stair_Raise_Angle = raise_angle;
+    Set_Raise_Angle(raise_angle);
     Capture_Stair_Attitude_Target();
     Enter_Stair_State(CHARIOT_LIFT_STAIR_DOWN_CHASSIS_WAIT_UP_BACK);
 }
@@ -793,6 +818,18 @@ void Class_Chariot_Lift::Set_Both_Lift_Raise(float raise_angle)
 void Class_Chariot_Lift::Set_Both_Lift_Raise_By_Motor_Angle(float lift_motor_angle)
 {
     Set_Both_Lift_Raise(Motor_To_Lift_Rod_Angle(lift_motor_angle));
+}
+
+void Class_Chariot_Lift::Set_Raise_Angle(float raise_angle)
+{
+    Lift_Params[CHARIOT_LIFT_MODULE_FRONT].raise_angle =
+        Calibrated_Lift_Raise_Rod_Angle(CHARIOT_LIFT_MODULE_FRONT, raise_angle);
+    Lift_Params[CHARIOT_LIFT_MODULE_REAR].raise_angle =
+        Calibrated_Lift_Raise_Rod_Angle(CHARIOT_LIFT_MODULE_REAR, raise_angle);
+    Stair_Raise_Angle[CHARIOT_LIFT_MODULE_FRONT] =
+        Lift_Params[CHARIOT_LIFT_MODULE_FRONT].raise_angle;
+    Stair_Raise_Angle[CHARIOT_LIFT_MODULE_REAR] =
+        Lift_Params[CHARIOT_LIFT_MODULE_REAR].raise_angle;
 }
 
 void Class_Chariot_Lift::Set_Both_Lift_Retract()
@@ -1039,7 +1076,7 @@ bool Class_Chariot_Lift::Is_Lift_Profile_Reached(Enum_Chariot_Lift_Module module
                                                  Enum_Chariot_Lift_Position_State state)
 {
     const float target = (state == CHARIOT_LIFT_POSITION_RAISE) ?
-        Stair_Raise_Angle :
+        Stair_Raise_Angle[module] :
         Lift_Params[module].retract_angle;
 
     return !Lift_Profile_Active[module] &&
@@ -1053,7 +1090,7 @@ bool Class_Chariot_Lift::Is_Lift_Feedback_Reached(Enum_Chariot_Lift_Module modul
         return false;
 
     const float target = (state == CHARIOT_LIFT_POSITION_RAISE) ?
-        Stair_Raise_Angle :
+        Stair_Raise_Angle[module] :
         Lift_Params[module].retract_angle;
     const float lift_rod_angle = Motor_To_Lift_Rod_Angle(Motor_Lift[module].Get_Now_Radian());
     return fabsf(lift_rod_angle - target) <= kStairLiftReachedTolerance;

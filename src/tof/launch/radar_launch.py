@@ -29,7 +29,7 @@ def generate_launch_description():
     baud_arg = DeclareLaunchArgument(
         'can_baud',
         default_value='1M',
-        description='CAN 波特率: 1M, 500k, 250k'
+        description='CAN 波特率: 1M, 500k, 250k, 1m-5m'
     )
 
     slave_high_arg = DeclareLaunchArgument(

@@ -71,8 +71,14 @@ ros2 launch tof radar_launch.py start_up_range_subscriber:=false
 # 指定网卡 / 波特率 / 从站 ID；slave_low:=0 表示不启用低频从站
 ros2 launch tof radar_launch.py ifname:=enp3s0 can_baud:=500k slave_high:=1 slave_low:=2
 
+# 高频 TFmini-S 透明传输链路走 CAN-FD 1M/5M
+ros2 launch tof radar_launch.py ifname:=enp4s0 can_baud:=1m-5m slave_high:=1 slave_low:=0
+
 # 直接运行（4 个可选参数：网卡  波特率  slave_high  slave_low）
 ros2 run tof can_link_test enp86s0 1M 1 0
+
+# 直接运行 CAN-FD 1M/5M
+ros2 run tof can_link_test enp4s0 1m-5m 1 0
 
 # 只启动四路上/下高频测距订阅节点
 ros2 run tof up_range_subscriber

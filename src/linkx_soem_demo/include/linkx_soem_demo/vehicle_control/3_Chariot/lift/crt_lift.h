@@ -118,7 +118,7 @@ public:
     inline void Set_Control_Type(Enum_Chariot_Lift_Control_Type type);
     inline void Set_Front_Lift_State(Enum_Chariot_Lift_Position_State state);
     inline void Set_Rear_Lift_State(Enum_Chariot_Lift_Position_State state);
-    inline void Set_Raise_Angle(float raise_angle);
+    void Set_Raise_Angle(float raise_angle);
     inline void Set_Diff_Drive_Enable(bool enable);
     inline void Set_Diff_Drive_Module(Enum_Chariot_Lift_Module module);
     inline void Set_Target_Diff_Command(float forward_m_s, float yaw_rad_s);
@@ -178,7 +178,7 @@ protected:
     uint8_t ToF_Offline_Ticks[CHARIOT_LIFT_TOF_NUM] = {0, 0, 0, 0};
 
     Enum_Chariot_Lift_Stair_State Stair_State = CHARIOT_LIFT_STAIR_IDLE;
-    float Stair_Raise_Angle = -8.0f;
+    float Stair_Raise_Angle[CHARIOT_LIFT_MODULE_NUM] = {0.0f, 0.0f};
     float Stair_Chassis_Forward = 0.0f;
     float Stair_Chassis_Omega = 0.0f;
     uint32_t Stair_State_Ticks = 0;
@@ -265,13 +265,6 @@ inline void Class_Chariot_Lift::Set_Rear_Lift_State(Enum_Chariot_Lift_Position_S
 {
     Lift_State[CHARIOT_LIFT_MODULE_REAR] = state;
     Lift_Module_Enable[CHARIOT_LIFT_MODULE_REAR] = true;
-}
-
-inline void Class_Chariot_Lift::Set_Raise_Angle(float raise_angle)
-{
-    Lift_Params[CHARIOT_LIFT_MODULE_FRONT].raise_angle = raise_angle;
-    Lift_Params[CHARIOT_LIFT_MODULE_REAR].raise_angle = raise_angle;
-    Stair_Raise_Angle = raise_angle;
 }
 
 inline void Class_Chariot_Lift::Set_Diff_Drive_Enable(bool enable)

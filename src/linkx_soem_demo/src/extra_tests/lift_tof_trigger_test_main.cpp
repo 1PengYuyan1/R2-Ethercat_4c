@@ -44,7 +44,7 @@ std::atomic<bool> st_running {true};
 
 struct Options
 {
-    std::string ifname = "enp86s0";
+    std::string ifname = "enp4s0";
     float raise_angle = -8.0f;
     uint16_t near_cm = 10U;
     uint16_t jump_cm = 5U;

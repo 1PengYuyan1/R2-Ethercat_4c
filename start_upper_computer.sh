@@ -2,7 +2,7 @@
 # 启动上位机 ROS 2 控制栈：joy → remote_node → topic_relay → linkx_soem_demo (EtherCAT)
 #
 # 使用方法:
-#   ./start_upper_computer.sh                                 # 默认 ifname=enp86s0, sudo
+#   ./start_upper_computer.sh                                 # 默认 ifname=enp4s0, sudo
 #   ./start_upper_computer.sh --ifname eth0                   # 指定网卡
 #   ./start_upper_computer.sh --no-vehicle                    # 仅启动 ROS 话题，不启动 EtherCAT 主控
 #   ./start_upper_computer.sh --no-sudo                       # 已 setcap 时跳过 sudo
@@ -76,13 +76,16 @@ set -u
 export FASTRTPS_DEFAULT_PROFILES_FILE="${WS_DIR}/src/linkx_bringup/config/fastrtps_profiles.xml"
 export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
+export ENABLE_TOF_PRINT="1"
+export TOF_PRINT_STDOUT="${TOF_PRINT_STDOUT:-0}"
+export TOF_PRINT_FILE="${TOF_PRINT_FILE:-${WS_DIR}/var_data/terminal/ops_terminal.log}"
 
 # raw 以太网权限：默认 sudo 启动，需要保留 LD_LIBRARY_PATH
 PREFIX=""
 if [[ "${USE_SUDO}" == "true" ]]; then
     echo "[SETUP] checking sudo permission for EtherCAT raw socket..."
     sudo -v
-    PREFIX="sudo -E env LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-} FASTRTPS_DEFAULT_PROFILES_FILE=${FASTRTPS_DEFAULT_PROFILES_FILE} ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY} ROS_DOMAIN_ID=${ROS_DOMAIN_ID}"
+    PREFIX="sudo -E env LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-} FASTRTPS_DEFAULT_PROFILES_FILE=${FASTRTPS_DEFAULT_PROFILES_FILE} ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY} ROS_DOMAIN_ID=${ROS_DOMAIN_ID} ENABLE_TOF_PRINT=${ENABLE_TOF_PRINT} TOF_PRINT_STDOUT=${TOF_PRINT_STDOUT} TOF_PRINT_FILE=${TOF_PRINT_FILE}"
 fi
 
 if ! ip link show "${IFNAME}" >/dev/null 2>&1; then
@@ -114,9 +117,9 @@ if [[ "${START_VEHICLE}" == "true" ]]; then
             exit 1
         fi
     fi
-    : > var_data/terminal/ops_terminal.log
-    echo "[MONITOR] tailing ToF feedback: var_data/terminal/ops_terminal.log"
-    tail -n 0 -F var_data/terminal/ops_terminal.log &
+    : > "${TOF_PRINT_FILE}"
+    echo "[MONITOR] tailing ToF/IMU/Lift feedback: ${TOF_PRINT_FILE}"
+    tail -n 0 -F "${TOF_PRINT_FILE}" &
     TAIL_PID="$!"
     trap 'if [[ -n "${TAIL_PID}" ]]; then kill "${TAIL_PID}" >/dev/null 2>&1 || true; fi' EXIT INT TERM
 fi

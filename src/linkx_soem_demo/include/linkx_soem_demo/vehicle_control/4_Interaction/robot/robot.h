@@ -158,6 +158,7 @@ protected:
     float auxiliary_motor_hold_angle_ = 0.0f;
     uint32_t auxiliary_motor_hold_ready_ticks_ = 0U;
     uint32_t auxiliary_motor_home_damping_ticks_ = 0U;
+    uint32_t auxiliary_motor_impact_damping_ticks_ = 0U;
     bool auxiliary_motor_command_enable_ = false;
     bool auxiliary_motor_profile_active_ = false;
     bool auxiliary_motor_profile_initialized_ = false;

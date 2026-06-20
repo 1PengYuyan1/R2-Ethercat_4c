@@ -299,6 +299,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/lift_raise_drive_test_mai
     )
     target_include_directories(lift_raise_drive_test PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
     target_link_libraries(lift_raise_drive_test pcap pthread rt m)
+    ament_target_dependencies(lift_raise_drive_test
+        rclcpp
+        sensor_msgs
+    )
     list(APPEND LINKX_SOEM_INSTALL_TARGETS lift_raise_drive_test)
 endif()
 
@@ -313,6 +317,17 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/lift_tof_trigger_test_mai
     target_include_directories(lift_tof_trigger_test PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
     target_link_libraries(lift_tof_trigger_test pcap pthread rt m)
     list(APPEND LINKX_SOEM_INSTALL_TARGETS lift_tof_trigger_test)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/tfmini_s_can_read_main.cpp")
+    add_executable(tfmini_s_can_read
+        src/extra_tests/tfmini_s_can_read_main.cpp
+        ${SOEM_SRC}
+        ${LINKX_BRIDGE_SRC}
+    )
+    target_include_directories(tfmini_s_can_read PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
+    target_link_libraries(tfmini_s_can_read pcap pthread rt m)
+    list(APPEND LINKX_SOEM_INSTALL_TARGETS tfmini_s_can_read)
 endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/omni_slope_param_sweep_main.cpp")

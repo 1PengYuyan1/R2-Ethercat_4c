@@ -36,32 +36,43 @@ constexpr float kManualBothLiftRetractAngle = -0.01f;
 constexpr float kAuxiliaryMotorRaisedAngle = 1.6f;
 constexpr float kAuxiliaryMotorHomeAngle = -0.05f;
 constexpr float kAuxiliaryMotorReachedTolerance = 0.05f;
+constexpr float kAuxiliaryMotorHomeReachedTolerance = 0.12f;
 constexpr float kAuxiliaryMotorControlDtS = 0.002f;
 constexpr float kAuxiliaryMotorProfileMaxSpeed = 5.8f;
+constexpr float kAuxiliaryMotorHomeProfileMaxSpeed = 1.6f;
 constexpr float kAuxiliaryMotorProfileMaxAccel = 22.0f;
-constexpr float kAuxiliaryMotorHomeProfileMaxAccel = 32.0f;
+constexpr float kAuxiliaryMotorHomeProfileMaxAccel = 8.0f;
 constexpr float kAuxiliaryMotorProfileMaxDecel = 28.0f;
-constexpr float kAuxiliaryMotorHomeProfileMaxDecel = 100.0f;
+constexpr float kAuxiliaryMotorHomeProfileMaxDecel = 12.0f;
 constexpr float kAuxiliaryMotorHomeProfileSnapDistance = 0.03f;
 constexpr float kAuxiliaryMotorMoveTorqueNm = 0.0f;
 constexpr float kAuxiliaryMotorMoveKp = 12.0f;
 constexpr float kAuxiliaryMotorMoveKd = 2.0f;
-constexpr float kAuxiliaryMotorHomeMoveKp = 28.0f;
-constexpr float kAuxiliaryMotorHomeMoveKd = 2.6f;
+constexpr float kAuxiliaryMotorHomeMoveKp = 4.0f;
+constexpr float kAuxiliaryMotorHomeMoveKd = 5.0f;
 constexpr float kAuxiliaryMotorHoldTorqueNm = 0.0f;
 constexpr float kAuxiliaryMotorHoldKp = 100.0f;
 constexpr float kAuxiliaryMotorHoldKd = 4.0f;
-constexpr float kAuxiliaryMotorHomeHoldKp = 85.0f;
+constexpr float kAuxiliaryMotorHoldDeadband = 0.010f;
+constexpr float kAuxiliaryMotorHoldNearRange = 0.040f;
+constexpr float kAuxiliaryMotorHoldNearScale = 0.25f;
+constexpr float kAuxiliaryMotorHomeHoldKp = 0.0f;
 constexpr float kAuxiliaryMotorHomeHoldKd = 5.0f;
 constexpr float kAuxiliaryMotorHomeHoldDeadband = 0.010f;
 constexpr float kAuxiliaryMotorHomeHoldNearRange = 0.035f;
 constexpr float kAuxiliaryMotorHomeHoldNearScale = 0.15f;
+constexpr float kAuxiliaryMotorHomeApproachNearRange = 0.18f;
+constexpr float kAuxiliaryMotorHomeApproachNearScale = 0.0f;
 constexpr float kAuxiliaryMotorHomeOscillationOmega = 0.70f;
 constexpr uint32_t kAuxiliaryMotorHomeDampingTicks = 180U;
 constexpr float kAuxiliaryMotorHomeDampingKp = 0.0f;
 constexpr float kAuxiliaryMotorHomeDampingKd = 5.0f;
+constexpr float kAuxiliaryMotorImpactOmega = 0.28f;
+constexpr uint32_t kAuxiliaryMotorImpactDampingTicks = 260U;
+constexpr float kAuxiliaryMotorImpactDampingKp = 0.0f;
+constexpr float kAuxiliaryMotorImpactDampingKd = 5.0f;
 constexpr float kAuxiliaryMotorHoldEnterTolerance = 0.04f;
-constexpr float kAuxiliaryMotorHomeHoldEnterTolerance = 0.05f;
+constexpr float kAuxiliaryMotorHomeHoldEnterTolerance = 0.12f;
 constexpr float kAuxiliaryMotorHoldEnterOmega = 0.25f;
 constexpr uint32_t kAuxiliaryMotorHoldEnterStableTicks = 25U;
 constexpr float kAuxiliaryMotorHoldExitTolerance = 0.20f;
@@ -697,6 +708,7 @@ void Class_Robot::_Enable_Auxiliary_Motor()
     auxiliary_motor_hold_blend_ = 0.0f;
     auxiliary_motor_hold_ready_ticks_ = 0U;
     auxiliary_motor_home_damping_ticks_ = 0U;
+    auxiliary_motor_impact_damping_ticks_ = 0U;
     Auxiliary_Motor.CAN_Send_Enter();
 }
 
@@ -709,6 +721,7 @@ void Class_Robot::_Disable_Auxiliary_Motor()
     auxiliary_motor_hold_blend_ = 0.0f;
     auxiliary_motor_hold_ready_ticks_ = 0U;
     auxiliary_motor_home_damping_ticks_ = 0U;
+    auxiliary_motor_impact_damping_ticks_ = 0U;
     Auxiliary_Motor.Set_Control_Status(Motor_DM_Status_DISABLE);
     Auxiliary_Motor.Set_Control_Maintain_Postion(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
     Auxiliary_Motor.CAN_Send_Exit();
@@ -806,6 +819,7 @@ void Class_Robot::_Reset_Auxiliary_Motor_Profile(float angle)
     auxiliary_motor_hold_angle_ = angle;
     auxiliary_motor_hold_ready_ticks_ = 0U;
     auxiliary_motor_home_damping_ticks_ = 0U;
+    auxiliary_motor_impact_damping_ticks_ = 0U;
 }
 
 void Class_Robot::_Start_Auxiliary_Motor_Profile(float target_angle)
@@ -814,8 +828,11 @@ void Class_Robot::_Start_Auxiliary_Motor_Profile(float target_angle)
     const float distance = target_angle - start_angle;
     const float abs_distance = std::fabs(distance);
     const bool home_target = Auxiliary_Is_Home_Target(target_angle);
+    const float max_speed = home_target ?
+        kAuxiliaryMotorHomeProfileMaxSpeed :
+        kAuxiliaryMotorProfileMaxSpeed;
     const float safe_peak_speed =
-        (kAuxiliaryMotorProfileMaxSpeed > 0.05f) ? kAuxiliaryMotorProfileMaxSpeed : 0.05f;
+        (max_speed > 0.05f) ? max_speed : 0.05f;
     const float max_accel = home_target ?
         kAuxiliaryMotorHomeProfileMaxAccel :
         kAuxiliaryMotorProfileMaxAccel;
@@ -869,6 +886,7 @@ void Class_Robot::_Start_Auxiliary_Motor_Profile(float target_angle)
     auxiliary_motor_hold_angle_ = start_angle;
     auxiliary_motor_hold_ready_ticks_ = 0U;
     auxiliary_motor_home_damping_ticks_ = 0U;
+    auxiliary_motor_impact_damping_ticks_ = 0U;
 
     if (!auxiliary_motor_profile_active_)
         _Reset_Auxiliary_Motor_Profile(target_angle);
@@ -976,6 +994,7 @@ void Class_Robot::_Output_Auxiliary_Motor()
         auxiliary_motor_hold_blend_ = 0.0f;
         auxiliary_motor_hold_ready_ticks_ = 0U;
         auxiliary_motor_home_damping_ticks_ = 0U;
+        auxiliary_motor_impact_damping_ticks_ = 0U;
         Auxiliary_Motor.CAN_Send_Enter();
     }
     else
@@ -996,6 +1015,7 @@ void Class_Robot::_Output_Auxiliary_Motor()
             auxiliary_motor_hold_blend_ = 0.0f;
             auxiliary_motor_hold_ready_ticks_ = 0U;
             auxiliary_motor_home_damping_ticks_ = 0U;
+            auxiliary_motor_impact_damping_ticks_ = 0U;
             auxiliary_motor_hold_active_ = false;
         }
 
@@ -1019,7 +1039,20 @@ void Class_Robot::_Output_Auxiliary_Motor()
                 auxiliary_motor_hold_blend_ = 0.0f;
                 auxiliary_motor_hold_angle_ = Auxiliary_Motor.Get_Now_Radian();
                 auxiliary_motor_home_damping_ticks_ = 0U;
+                auxiliary_motor_impact_damping_ticks_ = 0U;
             }
+        }
+
+        const bool home_profile_settling =
+            home_target &&
+            feedback_error <= kAuxiliaryMotorHomeApproachNearRange;
+
+        if ((auxiliary_motor_hold_active_ || home_profile_settling) &&
+            feedback_omega >= kAuxiliaryMotorImpactOmega)
+        {
+            auxiliary_motor_impact_damping_ticks_ = kAuxiliaryMotorImpactDampingTicks;
+            auxiliary_motor_home_damping_ticks_ = 0U;
+            auxiliary_motor_hold_blend_ = 0.0f;
         }
 
         if (home_target &&
@@ -1036,13 +1069,19 @@ void Class_Robot::_Output_Auxiliary_Motor()
             home_damping_mode = true;
             --auxiliary_motor_home_damping_ticks_;
         }
+        bool impact_damping_mode = false;
+        if (auxiliary_motor_impact_damping_ticks_ > 0U)
+        {
+            impact_damping_mode = true;
+            --auxiliary_motor_impact_damping_ticks_;
+        }
 
         if (auxiliary_motor_hold_active_)
         {
             const float hold_gain_ramp_time = home_target ?
                 kAuxiliaryMotorHomeHoldGainRampTimeS :
                 kAuxiliaryMotorHoldGainRampTimeS;
-            if (home_damping_mode)
+            if (home_damping_mode || impact_damping_mode)
             {
                 auxiliary_motor_hold_blend_ = 0.0f;
             }
@@ -1075,14 +1114,21 @@ void Class_Robot::_Output_Auxiliary_Motor()
             move_kd + blend * (hold_kd - move_kd);
         float control_angle = auxiliary_motor_smooth_angle_;
         float control_omega = target_omega;
-        if (home_target && auxiliary_motor_hold_active_)
+        if (home_target && (auxiliary_motor_hold_active_ || home_profile_settling))
         {
             const float now_angle = Auxiliary_Motor.Get_Now_Radian();
             const float target_error = auxiliary_motor_target_angle_ - now_angle;
             const float abs_target_error = std::fabs(target_error);
             control_omega = 0.0f;
 
-            if (home_damping_mode)
+            if (home_profile_settling && !auxiliary_motor_hold_active_)
+            {
+                control_angle = now_angle;
+                control_torque = 0.0f;
+                control_kp = kAuxiliaryMotorHomeDampingKp;
+                control_kd = kAuxiliaryMotorHomeDampingKd;
+            }
+            else if (home_damping_mode)
             {
                 control_angle = now_angle +
                                 target_error * kAuxiliaryMotorHomeHoldNearScale;
@@ -1099,10 +1145,46 @@ void Class_Robot::_Output_Auxiliary_Motor()
                 control_angle = now_angle +
                                 target_error * kAuxiliaryMotorHomeHoldNearScale;
             }
+            else if (!auxiliary_motor_hold_active_ &&
+                     abs_target_error <= kAuxiliaryMotorHomeApproachNearRange)
+            {
+                control_angle = now_angle +
+                                target_error * kAuxiliaryMotorHomeApproachNearScale;
+            }
             else
             {
                 control_angle = auxiliary_motor_target_angle_;
             }
+        }
+        else if (auxiliary_motor_hold_active_)
+        {
+            const float now_angle = Auxiliary_Motor.Get_Now_Radian();
+            const float target_error = auxiliary_motor_target_angle_ - now_angle;
+            const float abs_target_error = std::fabs(target_error);
+            control_omega = 0.0f;
+
+            if (abs_target_error <= kAuxiliaryMotorHoldDeadband)
+            {
+                control_angle = now_angle;
+            }
+            else if (abs_target_error <= kAuxiliaryMotorHoldNearRange)
+            {
+                control_angle = now_angle +
+                                target_error * kAuxiliaryMotorHoldNearScale;
+            }
+            else
+            {
+                control_angle = auxiliary_motor_target_angle_;
+            }
+        }
+
+        if (impact_damping_mode)
+        {
+            control_angle = Auxiliary_Motor.Get_Now_Radian();
+            control_omega = 0.0f;
+            control_torque = 0.0f;
+            control_kp = kAuxiliaryMotorImpactDampingKp;
+            control_kd = kAuxiliaryMotorImpactDampingKd;
         }
 
         Auxiliary_Motor.Set_Control_Maintain_Postion(
@@ -1118,11 +1200,14 @@ void Class_Robot::_Output_Auxiliary_Motor()
 
 bool Class_Robot::_Is_Auxiliary_Motor_Reached(float target_angle)
 {
+    const float reached_tolerance = Auxiliary_Is_Home_Target(target_angle) ?
+        kAuxiliaryMotorHomeReachedTolerance :
+        kAuxiliaryMotorReachedTolerance;
     return Auxiliary_Motor.Get_Status() == Motor_DM_Status_ENABLE &&
            _Is_Auxiliary_Motor_Profile_At_Target() &&
            auxiliary_motor_hold_active_ &&
            std::fabs(Auxiliary_Motor.Get_Now_Radian() - target_angle) <=
-               kAuxiliaryMotorReachedTolerance;
+               reached_tolerance;
 }
 
 void Class_Robot::_Log_Chassis_Start_Gate(const char *msg)

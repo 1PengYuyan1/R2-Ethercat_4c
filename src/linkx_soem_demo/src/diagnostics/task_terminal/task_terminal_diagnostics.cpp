@@ -22,6 +22,7 @@ constexpr uint32_t kCanStatPrintPeriodMs = 2;
 constexpr uint32_t kLiveDashboardPeriodMs = 2;
 constexpr uint32_t kToFPrintPeriodMs = 2;
 constexpr uint32_t kDefaultToFButtonLogPeriodMs = 2;
+constexpr float kLiftMotorToRodRatio = 3.0f;
 
 bool g_enable_can_stat_print = false;
 bool g_enable_live_dashboard = false;
@@ -151,6 +152,38 @@ const char *ImuStateName(const Class_Chariot_Imu_Heading_Hold::Snapshot &imu)
     if (!imu.valid)
         return "NO_DATA";
     return imu.fresh ? "OK" : "STALE";
+}
+
+const char *LiftModuleName(int index)
+{
+    return (index == CHARIOT_LIFT_MODULE_FRONT) ? "front" : "rear";
+}
+
+uint8_t LiftModuleCanChannel(int index)
+{
+    return (index == CHARIOT_LIFT_MODULE_FRONT) ? 0U : 1U;
+}
+
+const char *DmStatusName(Enum_Motor_DM_Status status)
+{
+    return (status == Motor_DM_Status_ENABLE) ? "ONLINE" : "OFFLINE";
+}
+
+const char *DmControlStatusName(Enum_Motor_DM_Control_Status_Normal status)
+{
+    switch (status)
+    {
+    case Motor_DM_Control_Status_DISABLE: return "DISABLE";
+    case Motor_DM_Control_Status_ENABLE: return "ENABLE";
+    case Motor_DM_Control_Status_UNDERVOLTAGE: return "UNDERVOLT";
+    case Motor_DM_Control_Status_OVERCURRENT: return "OVERCUR";
+    case Motor_DM_Control_Status_MOS_OVERTEMPERATURE: return "MOS_OT";
+    case Motor_DM_Control_Status_ROTOR_OVERTEMPERATURE: return "ROTOR_OT";
+    case Motor_DM_Control_Status_LOSE_CONNECTION: return "LOST";
+    case Motor_DM_Control_Status_MOS_OVERLOAD: return "MOS_OL";
+    case Motor_DM_Control_Status_OVERVOLTAGE: return "OVERVOLT";
+    default: return "UNKNOWN";
+    }
 }
 
 std::string MakeDefaultToFButtonLogPath()
@@ -376,7 +409,7 @@ void PrintToFTerminalData(Class_Robot &robot)
     else
         std::snprintf(imu_age, sizeof(imu_age), "no_data");
 
-    char frame[2048];
+    char frame[8192];
     int n = std::snprintf(frame, sizeof(frame),
                           "\033[2J\033[H[LIFT-TOF+IMU] refresh=%ums\n\n"
                           "+------------------------+--------+----------+--------+----------+----------+\n"
@@ -403,10 +436,44 @@ void PrintToFTerminalData(Class_Robot &robot)
                            static_cast<unsigned>(tof.frame_count));
     }
 
-    if (n < static_cast<int>(sizeof(frame)) - 512)
+    if (n < static_cast<int>(sizeof(frame)) - 1280)
     {
         n += std::snprintf(frame + n, sizeof(frame) - n,
                            "+------------------------+--------+----------+--------+----------+----------+\n\n"
+                           "+--------+----+------+------+---------+----------+-----------+-----------+-----------+-----------+----------+\n"
+                           "| Lift   | ch | rx   | tx   | online  | ctrl     | mpos_rad  | mvel_rad  | rpos_rad  | rvel_rad  | torqueNm |\n"
+                           "+--------+----+------+------+---------+----------+-----------+-----------+-----------+-----------+----------+\n");
+
+        for (int i = 0; i < CHARIOT_LIFT_MODULE_NUM &&
+                        n < static_cast<int>(sizeof(frame)) - 320; ++i)
+        {
+            auto &motor = robot.Lift.Motor_Lift[i];
+            const float motor_pos = motor.Get_Now_Radian();
+            const float motor_vel = motor.Get_Now_Omega();
+            const float rod_pos = motor_pos / kLiftMotorToRodRatio;
+            const float rod_vel = motor_vel / kLiftMotorToRodRatio;
+
+            n += std::snprintf(frame + n, sizeof(frame) - n,
+                               "| %-6s | %2u | 0x%02X | 0x%02X | %-7s | %-8s | %9.3f | %9.3f | %9.3f | %9.3f | %8.3f |\n",
+                               LiftModuleName(i),
+                               static_cast<unsigned>(LiftModuleCanChannel(i)),
+                               static_cast<unsigned>(motor.DM_CAN_Rx_ID),
+                               static_cast<unsigned>(motor.DM_CAN_Tx_ID),
+                               DmStatusName(motor.Get_Status()),
+                               DmControlStatusName(motor.Get_Now_Control_Status()),
+                               motor_pos,
+                               motor_vel,
+                               rod_pos,
+                               rod_vel,
+                               motor.Get_Now_Torque());
+        }
+    }
+
+    if (n < static_cast<int>(sizeof(frame)) - 512)
+    {
+        n += std::snprintf(frame + n, sizeof(frame) - n,
+                           "+--------+----+------+------+---------+----------+-----------+-----------+-----------+-----------+----------+\n"
+                           "Lift target: CAN0/CAN1 Tx 0x05 feedback Rx 0x15, rod = motor / 3\n\n"
                            "+---------+----------+-----------+-----------+-----------+-----------+-----------+-----------+\n"
                            "| IMU     | age_ms   | roll_deg  | pitch_deg | yaw_deg   | gyro_x    | gyro_y    | gyro_z    |\n"
                            "+---------+----------+-----------+-----------+-----------+-----------+-----------+-----------+\n"

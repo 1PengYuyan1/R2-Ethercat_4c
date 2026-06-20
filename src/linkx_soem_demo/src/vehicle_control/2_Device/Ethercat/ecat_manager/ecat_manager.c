@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include "soem/soem.h"
 
-#define ECAT_WKC_ERROR_LOG_PERIOD 100
+#define ECAT_WKC_ERROR_LOG_PERIOD 1000
 
 static void ecat_dump_slave_states(ecat_master_t *master)
 {
@@ -53,13 +53,18 @@ bool ecat_master_init(ecat_master_t *master, const char *ifname)
     }
 
     printf("[ECAT] found %d slave(s) on '%s'\n", master->ctx.slavecount, ifname);
+    fflush(stdout);
 
     // 1. 映射 IO 数据 (告诉系统报文有多长)
+    printf("[ECAT] config_map_group...\n");
+    fflush(stdout);
     ecx_config_map_group(&master->ctx, master->iomap, 0);
     master->expected_wkc = (master->ctx.grouplist[0].outputsWKC * 2) +
                            master->ctx.grouplist[0].inputsWKC;
     // DC 核心功能 ：对表与计算延迟
     // 必须放在 IO 映射之后，状态机检查之前！
+    printf("[ECAT] configdc...\n");
+    fflush(stdout);
     ecx_configdc(&master->ctx);
     
     // // DC 核心功能 ：激活从站的 Sync0 硬件心跳
@@ -73,6 +78,8 @@ bool ecat_master_init(ecat_master_t *master, const char *ifname)
     //     ecx_dcsync0(&master->ctx, i, TRUE, cycle_time_ns, shift_time_ns);
     // }
     // 检查从站状态
+    printf("[ECAT] statecheck SAFE_OP...\n");
+    fflush(stdout);
     int state = ecx_statecheck(&master->ctx, 0, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE * 2);
     if (state != EC_STATE_SAFE_OP)
     {
@@ -101,8 +108,14 @@ int ecat_master_sync(ecat_master_t *master)
     if (master->expected_wkc > 0 && wkc < master->expected_wkc)
     {
         master->consecutive_wkc_errors++;
-        if (master->consecutive_wkc_errors == 1 ||
-            (master->consecutive_wkc_errors % ECAT_WKC_ERROR_LOG_PERIOD) == 0)
+        if (master->consecutive_wkc_errors == 1)
+        {
+            printf("[ECAT] low WKC: got=%d expected=%d\n",
+                   wkc,
+                   master->expected_wkc);
+            fflush(stdout);
+        }
+        else if ((master->consecutive_wkc_errors % ECAT_WKC_ERROR_LOG_PERIOD) == 0)
         {
             ecat_dump_slave_states(master);
         }

@@ -1,12 +1,12 @@
 // can_link_test.cpp
 // 上位机统一传感器节点
 //   - 通过 EtherCAT + DM-LinKX-4c 读取 CAN 报文
-//   - 高频传感器 (TFmini-S, 8路):  /high/...  (slave 1, CH2 + CH3)
-//   - 低频传感器 (4路):             /low/...   (slave 2, CH3)
+//   - 高频传感器 (TFmini-S, 12路): /high/...  (2 块 EtherCAT 模块)
+//   - 低频传感器 (4路):             /low/...   (可选第 3 块模块)
 //
 // 用法:
-//   ./can_link_test [ifname] [can_baud] [slave_id_high] [slave_id_low]
-//   默认:  enp86s0  1M  1  0
+//   ./can_link_test [ifname] [can_baud] [slave_id_high_front] [slave_id_high_up] [slave_id_low]
+//   默认:  enp86s0  1M  2  1  0
 
 #include "ecat_manager.h"
 #include "linkx.h"
@@ -25,9 +25,9 @@
 #include <condition_variable>
 
 // ── 高频传感器接口（dvc_tfmini_s.cpp）──────────────────────
-extern void task_init              (rclcpp::Node::SharedPtr node, linkx_t* linkx_master);
+extern void task_init              (rclcpp::Node::SharedPtr node);
 extern void task_shutdown          ();
-extern void Pump_CAN_Receive       (uint8_t channel, const can_msg_t& rx_msg);
+extern void Pump_CAN_Receive       (int module_alias, uint8_t channel, const can_msg_t& rx_msg);
 extern void Tick_Alive_Check       ();
 
 // ── 低频传感器接口（dvc_low_freq.cpp）───────────────────────
@@ -59,6 +59,7 @@ static bool recover_ecat_master(ecat_master_t* master,
 class CanFrameQueue {
 public:
     struct Entry {
+        int       module_alias;
         uint8_t   channel;
         can_msg_t msg;
         uint8_t   dispatch;
@@ -66,14 +67,14 @@ public:
 
     static constexpr size_t MAX_SIZE = 4096;
 
-    void push(uint8_t ch, const can_msg_t& msg, uint8_t dispatch) {
+    void push(int module_alias, uint8_t ch, const can_msg_t& msg, uint8_t dispatch) {
         {
             std::lock_guard<std::mutex> lk(mtx_);
             if (q_.size() >= MAX_SIZE) {
                 q_.pop();
                 drop_cnt_++;
             }
-            q_.push({ch, msg, dispatch});
+            q_.push({module_alias, ch, msg, dispatch});
         }
         cv_.notify_one();
     }
@@ -107,31 +108,46 @@ private:
     bool                    stop_     = false;
 };
 
-// CAN 控制器时钟 80MHz，支持 1M / 500k / 250k
+// CAN 控制器时钟 80MHz，支持经典 CAN 1M / 500k / 250k，以及 CAN-FD 1m-5m
 static bool configure_can_baudrate(linkx_t* linkx, uint8_t ch,
                                     const std::string& baud_str,
                                     const rclcpp::Logger& logger)
 {
-    uint8_t pre, seg1, seg2, sjw;
+    uint8_t fd_en = 0;
+    uint8_t n_pre, n_seg1, n_seg2, n_sjw;
+    uint8_t d_pre, d_seg1, d_seg2, d_sjw;
+    const char* mode = "classic CAN";
 
     if (baud_str == "1M") {
-        pre = 2; seg1 = 29; seg2 = 10; sjw = 1;
+        n_pre = 2; n_seg1 = 29; n_seg2 = 10; n_sjw = 1;
+        d_pre = 2; d_seg1 = 7; d_seg2 = 2; d_sjw = 1;
     } else if (baud_str == "500k") {
-        pre = 4; seg1 = 29; seg2 = 10; sjw = 1;
+        n_pre = 4; n_seg1 = 29; n_seg2 = 10; n_sjw = 1;
+        d_pre = 2; d_seg1 = 7; d_seg2 = 2; d_sjw = 1;
     } else if (baud_str == "250k") {
-        pre = 8; seg1 = 29; seg2 = 10; sjw = 1;
+        n_pre = 8; n_seg1 = 29; n_seg2 = 10; n_sjw = 1;
+        d_pre = 2; d_seg1 = 7; d_seg2 = 2; d_sjw = 1;
+    } else if (baud_str == "1m-5m") {
+        fd_en = 1;
+        mode = "CAN-FD";
+        n_pre = 2; n_seg1 = 31; n_seg2 = 8; n_sjw = 8;
+        d_pre = 1; d_seg1 = 12; d_seg2 = 3; d_sjw = 3;
     } else {
-        RCLCPP_WARN(logger, "Unknown baudrate '%s', falling back to 1M", baud_str.c_str());
-        pre = 2; seg1 = 29; seg2 = 10; sjw = 1;
+        RCLCPP_WARN(logger, "Unknown baudrate '%s', falling back to classic CAN 1M", baud_str.c_str());
+        n_pre = 2; n_seg1 = 29; n_seg2 = 10; n_sjw = 1;
+        d_pre = 2; d_seg1 = 7; d_seg2 = 2; d_sjw = 1;
     }
 
-    RCLCPP_INFO(logger, "CAN CH%d baudrate: %s (pre=%d seg1=%d seg2=%d sjw=%d)",
-                ch, baud_str.c_str(), pre, seg1, seg2, sjw);
+    RCLCPP_INFO(logger,
+                "CAN CH%d mode=%s baudrate=%s nominal(pre=%d seg1=%d seg2=%d sjw=%d) data(pre=%d seg1=%d seg2=%d sjw=%d)",
+                ch, mode, baud_str.c_str(),
+                n_pre, n_seg1, n_seg2, n_sjw,
+                d_pre, d_seg1, d_seg2, d_sjw);
 
     return linkx_set_can_baudrate(linkx, ch,
-                                   0,           // fd_en=0，经典 CAN
-                                   pre, seg1, seg2, sjw,
-                                   2, 7, 2, 1);
+                                   fd_en,
+                                   n_pre, n_seg1, n_seg2, n_sjw,
+                                   d_pre, d_seg1, d_seg2, d_sjw);
 }
 
 // 在 SAFE_OP 阶段完成从站 SDO 配置（wakeup + 波特率），必须在 ecat_master_bring_online 之前调用
@@ -172,14 +188,16 @@ int main(int argc, char** argv)
     const auto& logger = node->get_logger();
 
     // --- 1. 解析启动参数 ---
-    std::string ifname   = (argc > 1) ? argv[1] : "enp86s0";
-    std::string can_baud = (argc > 2) ? argv[2] : "1M";
-    uint32_t slave_high  = (argc > 3) ? static_cast<uint32_t>(std::stoul(argv[3])) : 1;
-    uint32_t slave_low   = (argc > 4) ? static_cast<uint32_t>(std::stoul(argv[4])) : 0;
+    std::string ifname           = (argc > 1) ? argv[1] : "enp86s0";
+    std::string can_baud         = (argc > 2) ? argv[2] : "1M";
+    uint32_t slave_high_front    = (argc > 3) ? static_cast<uint32_t>(std::stoul(argv[3])) : 2;
+    uint32_t slave_high_up_down  = (argc > 4) ? static_cast<uint32_t>(std::stoul(argv[4])) : 1;
+    uint32_t slave_low           = (argc > 5) ? static_cast<uint32_t>(std::stoul(argv[5])) : 0;
 
     RCLCPP_INFO(logger,
-                "Interface: %s  CAN: %s  slave_high=%u  slave_low=%u",
-                ifname.c_str(), can_baud.c_str(), slave_high, slave_low);
+                "Interface: %s  CAN: %s  slave_high_front=%u  slave_high_up_down=%u  slave_low=%u",
+                ifname.c_str(), can_baud.c_str(),
+                slave_high_front, slave_high_up_down, slave_low);
 
     // --- 2. EtherCAT 主站初始化 ---
     ecat_master_t master;
@@ -192,9 +210,26 @@ int main(int argc, char** argv)
     }
 
     // --- 3. SAFE_OP 下完成从站 SDO 配置 ---
-    linkx_t linkx_high, linkx_low;
+    linkx_t linkx_high_front, linkx_high_up_down, linkx_low;
 
-    bool high_ok = init_linkx_slave_safeop(&linkx_high, slave_high, &master, can_baud, logger);
+    bool high_front_ok = false;
+    if (slave_high_front == 0) {
+        RCLCPP_INFO(logger, "[slave_high_front=0] Front/left/right/back high-frequency slave disabled");
+    } else {
+        high_front_ok = init_linkx_slave_safeop(&linkx_high_front, slave_high_front, &master, can_baud, logger);
+    }
+
+    bool high_up_down_ok = false;
+    if (slave_high_up_down == 0) {
+        RCLCPP_INFO(logger, "[slave_high_up_down=0] Up/down high-frequency slave disabled");
+    } else if (slave_high_up_down == slave_high_front && high_front_ok) {
+        RCLCPP_INFO(logger, "[slave_high_up_down=%u] Sharing front/rear high-frequency slave",
+                    slave_high_up_down);
+        high_up_down_ok = true;
+    } else {
+        high_up_down_ok = init_linkx_slave_safeop(&linkx_high_up_down, slave_high_up_down, &master, can_baud, logger);
+    }
+
     bool low_ok  = false;
     if (slave_low == 0) {
         RCLCPP_INFO(logger, "[slave_low=0] Low-frequency slave disabled");
@@ -202,8 +237,8 @@ int main(int argc, char** argv)
         low_ok = init_linkx_slave_safeop(&linkx_low, slave_low, &master, can_baud, logger);
     }
 
-    if (!high_ok && !low_ok) {
-        RCLCPP_FATAL(logger, "Both LinkX slaves failed to initialize");
+    if (!high_front_ok && !high_up_down_ok && !low_ok) {
+        RCLCPP_FATAL(logger, "All LinkX slaves failed to initialize");
         rclcpp::shutdown();
         return 1;
     }
@@ -218,7 +253,7 @@ int main(int argc, char** argv)
                 master.slave_count, master.expected_wkc);
 
     // --- 5. 传感器阵列初始化 ---
-    if (high_ok) task_init    (node, &linkx_high);
+    if (high_front_ok || high_up_down_ok) task_init(node);
     if (low_ok)  task_init_low(node, &linkx_low);
 
     // --- 6. 信号处理 ---
@@ -236,7 +271,7 @@ int main(int argc, char** argv)
     std::thread consumer_thread([&]() {
         CanFrameQueue::Entry e;
         while (can_queue.pop(e)) {
-            if (e.dispatch & 0x01) Pump_CAN_Receive    (e.channel, e.msg);
+            if (e.dispatch & 0x01) Pump_CAN_Receive    (e.module_alias, e.channel, e.msg);
             if (e.dispatch & 0x02) Pump_CAN_Receive_Low(e.channel, e.msg);
         }
     });
@@ -248,13 +283,15 @@ int main(int argc, char** argv)
     auto t_last_alive = Clock::now();
     auto t_last_stats = Clock::now();
     uint64_t loop_cnt = 0;
-    uint64_t cnt_high[LINKX_CAN_CHANNEL_NUM] = {0};
+    uint64_t cnt_high_front[LINKX_CAN_CHANNEL_NUM] = {0};
+    uint64_t cnt_high_up_down[LINKX_CAN_CHANNEL_NUM] = {0};
     uint64_t cnt_low [LINKX_CAN_CHANNEL_NUM] = {0};
     int sync_err = 0;
     std::map<uint32_t, uint64_t> id_dlen_cnt;
 
     // 诊断探针：绕过去重，直接记录每通道原始 PDO 曾出现过的 CAN ID
-    static bool raw_id_seen_high[LINKX_CAN_CHANNEL_NUM][2048] = {{false}};
+    static bool raw_id_seen_high_front[LINKX_CAN_CHANNEL_NUM][2048] = {{false}};
+    static bool raw_id_seen_high_up_down[LINKX_CAN_CHANNEL_NUM][2048] = {{false}};
     static bool raw_id_seen_low [LINKX_CAN_CHANNEL_NUM][2048] = {{false}};
 
     while (g_running && rclcpp::ok()) {
@@ -281,31 +318,45 @@ int main(int argc, char** argv)
         }
 
         // ── 高频从站 ────────────────────────────────────────────
-        if (high_ok) {
-            linkx_send_pdos(&linkx_high);
-            linkx_recv_pdos(&linkx_high);
+        if (high_front_ok) {
+            linkx_send_pdos(&linkx_high_front);
+            linkx_recv_pdos(&linkx_high_front);
 
             for (int ch = 0; ch < LINKX_CAN_CHANNEL_NUM; ch++) {
-                // 原始探针
-                can_tx_pdo_t* raw = linkx_recv_can(&linkx_high, static_cast<uint8_t>(ch));
-                if (raw) raw_id_seen_high[ch][raw->can_id & 0x7FF] = true;
+                can_tx_pdo_t* raw = linkx_recv_can(&linkx_high_front, static_cast<uint8_t>(ch));
+                if (raw) raw_id_seen_high_front[ch][raw->can_id & 0x7FF] = true;
 
                 can_msg_t msg;
-                while (linkx_quick_recv(&linkx_high, static_cast<uint8_t>(ch), &msg)) {
+                while (linkx_quick_recv(&linkx_high_front, static_cast<uint8_t>(ch), &msg)) {
                     if (msg.id == 0 && msg.dlen == 0) continue;
-                    cnt_high[ch]++;
+                    cnt_high_front[ch]++;
                     id_dlen_cnt[((uint32_t)ch<<24)|((uint32_t)msg.dlen<<16)|(msg.id&0xFFFF)]++;
+                    can_queue.push(0, static_cast<uint8_t>(ch), msg, 0x01);
+                }
+            }
+        }
 
-                    // 同从站时同一帧同时分发给高频和低频 handler
-                    uint8_t dispatch = 0x01;
-                    if (low_ok && slave_high == slave_low) dispatch |= 0x02;
-                    can_queue.push(static_cast<uint8_t>(ch), msg, dispatch);
+        if (high_up_down_ok && slave_high_up_down != slave_high_front) {
+            linkx_send_pdos(&linkx_high_up_down);
+            linkx_recv_pdos(&linkx_high_up_down);
+
+            for (int ch = 0; ch < LINKX_CAN_CHANNEL_NUM; ch++) {
+                can_tx_pdo_t* raw = linkx_recv_can(&linkx_high_up_down, static_cast<uint8_t>(ch));
+                if (raw) raw_id_seen_high_up_down[ch][raw->can_id & 0x7FF] = true;
+
+                can_msg_t msg;
+                while (linkx_quick_recv(&linkx_high_up_down, static_cast<uint8_t>(ch), &msg)) {
+                    if (msg.id == 0 && msg.dlen == 0) continue;
+                    cnt_high_up_down[ch]++;
+                    can_queue.push(1, static_cast<uint8_t>(ch), msg, 0x01);
                 }
             }
         }
 
         // ── 低频从站（独立物理从站时才单独处理）────────────────
-        if (low_ok && (!high_ok || slave_high != slave_low)) {
+        if (low_ok &&
+            (!high_front_ok || slave_high_front != slave_low) &&
+            (!high_up_down_ok || slave_high_up_down != slave_low)) {
             linkx_send_pdos(&linkx_low);
             linkx_recv_pdos(&linkx_low);
 
@@ -319,7 +370,7 @@ int main(int argc, char** argv)
                     if (msg.id == 0 && msg.dlen == 0) continue;
                     cnt_low[ch]++;
                     id_dlen_cnt[((uint32_t)ch<<24)|((uint32_t)msg.dlen<<16)|(msg.id&0xFFFF)]++;
-                    can_queue.push(static_cast<uint8_t>(ch), msg, 0x02);
+                    can_queue.push(-1, static_cast<uint8_t>(ch), msg, 0x02);
                 }
             }
         }
@@ -328,7 +379,7 @@ int main(int argc, char** argv)
 
         // 每 1 秒检测传感器在线状态
         if (now - t_last_alive >= std::chrono::seconds(1)) {
-            if (high_ok) Tick_Alive_Check();
+            if (high_front_ok || high_up_down_ok) Tick_Alive_Check();
             if (low_ok)  Tick_Alive_Check_Low();
             t_last_alive = now;
         }
@@ -337,10 +388,16 @@ int main(int argc, char** argv)
         if (now - t_last_stats >= std::chrono::seconds(5)) {
             RCLCPP_INFO(logger, "STATS loop=%lu  queue_size=%zu  queue_drops=%lu",
                         loop_cnt, can_queue.size(), can_queue.drop_count());
-            if (high_ok)
+            if (high_front_ok)
                 RCLCPP_INFO(logger,
-                    "  HIGH slave=%u  CH0=%lu CH1=%lu CH2=%lu CH3=%lu",
-                    slave_high, cnt_high[0], cnt_high[1], cnt_high[2], cnt_high[3]);
+                    "  HIGH_FRONT slave=%u  CH0=%lu CH1=%lu CH2=%lu CH3=%lu",
+                    slave_high_front,
+                    cnt_high_front[0], cnt_high_front[1], cnt_high_front[2], cnt_high_front[3]);
+            if (high_up_down_ok && slave_high_up_down != slave_high_front)
+                RCLCPP_INFO(logger,
+                    "  HIGH_UP_DOWN slave=%u  CH0=%lu CH1=%lu CH2=%lu CH3=%lu",
+                    slave_high_up_down,
+                    cnt_high_up_down[0], cnt_high_up_down[1], cnt_high_up_down[2], cnt_high_up_down[3]);
             if (low_ok)
                 RCLCPP_INFO(logger,
                     "  LOW  slave=%u  CH0=%lu CH1=%lu CH2=%lu CH3=%lu",
@@ -364,7 +421,9 @@ int main(int argc, char** argv)
                                 tag, ch, o ? ids : " (none)");
                 }
             };
-            if (high_ok) print_raw_ids("HIGH", raw_id_seen_high);
+            if (high_front_ok) print_raw_ids("HIGH_FRONT", raw_id_seen_high_front);
+            if (high_up_down_ok && slave_high_up_down != slave_high_front)
+                print_raw_ids("HIGH_UP_DOWN", raw_id_seen_high_up_down);
             if (low_ok)  print_raw_ids("LOW ", raw_id_seen_low);
 
             t_last_stats = now;
@@ -375,9 +434,10 @@ int main(int argc, char** argv)
     can_queue.request_stop();
     consumer_thread.join();
 
-    if (high_ok) task_shutdown();
+    if (high_front_ok || high_up_down_ok) task_shutdown();
     if (low_ok)  task_shutdown_low();
-    if (high_ok) linkx_stop(&linkx_high);
+    if (high_front_ok) linkx_stop(&linkx_high_front);
+    if (high_up_down_ok && slave_high_up_down != slave_high_front) linkx_stop(&linkx_high_up_down);
     if (low_ok)  linkx_stop(&linkx_low);
 
     RCLCPP_INFO(logger, "Shutdown complete (total loops=%lu)", loop_cnt);
