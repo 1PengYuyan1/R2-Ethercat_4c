@@ -80,6 +80,8 @@ void linkx_init(linkx_t *linkx, uint32_t slave_id, struct ecx_context *master)
     memset(linkx->rx_pdos, 0, sizeof(linkx->rx_pdos));
     memset(linkx->tx_queues, 0, sizeof(linkx->tx_queues));
     memset(linkx->can_stats, 0, sizeof(linkx->can_stats));
+    // tx_queues 由控制线程压入、IO 线程弹出，发送路径需串行化（见 tx_lock 说明）。
+    pthread_mutex_init(&linkx->tx_lock, NULL);
 }
 
 // 封装状态切换逻辑，屏蔽 EtherCAT 状态机细节
@@ -209,7 +211,11 @@ void linkx_send_pdos(linkx_t *linkx)
     for (int i = 0; i < LINKX_CAN_CHANNEL_NUM; i++)
     {
         linkx_tx_frame_t frame = {0};
-        if (linkx_tx_queue_pop(&linkx->tx_queues[i], &frame))
+        // 仅出队这一步与 linkx_send_can 的入队跨线程竞争，加锁范围最小化。
+        pthread_mutex_lock(&linkx->tx_lock);
+        bool popped = linkx_tx_queue_pop(&linkx->tx_queues[i], &frame);
+        pthread_mutex_unlock(&linkx->tx_lock);
+        if (popped)
         {
             linkx_fill_rx_pdo(&linkx->rx_pdos[i], &frame);
             linkx->can_stats[i].tx_frames++;
@@ -245,7 +251,9 @@ bool linkx_send_can(linkx_t *linkx, uint8_t channel, uint32_t canid, bool canfd,
         memcpy(frame.data, data, dlen);
 
     bool dropped_oldest = false;
+    pthread_mutex_lock(&linkx->tx_lock);
     linkx_tx_queue_push_or_update(&linkx->tx_queues[channel], &frame, &dropped_oldest);
+    pthread_mutex_unlock(&linkx->tx_lock);
     if (dropped_oldest)
         linkx->can_stats[channel].tx_dropped_frames++;
 

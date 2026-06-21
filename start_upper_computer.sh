@@ -77,15 +77,17 @@ export FASTRTPS_DEFAULT_PROFILES_FILE="${WS_DIR}/src/linkx_bringup/config/fastrt
 export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export ENABLE_TOF_PRINT="1"
-export TOF_PRINT_STDOUT="${TOF_PRINT_STDOUT:-0}"
+export TOF_PRINT_STDOUT="${TOF_PRINT_STDOUT:-1}"
 export TOF_PRINT_FILE="${TOF_PRINT_FILE:-${WS_DIR}/var_data/terminal/ops_terminal.log}"
+export TOF_DEBUG="${TOF_DEBUG:-0}"
+export TOF_PUBLISH_INVALID="${TOF_PUBLISH_INVALID:-1}"
 
 # raw 以太网权限：默认 sudo 启动，需要保留 LD_LIBRARY_PATH
 PREFIX=""
 if [[ "${USE_SUDO}" == "true" ]]; then
     echo "[SETUP] checking sudo permission for EtherCAT raw socket..."
     sudo -v
-    PREFIX="sudo -E env LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-} FASTRTPS_DEFAULT_PROFILES_FILE=${FASTRTPS_DEFAULT_PROFILES_FILE} ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY} ROS_DOMAIN_ID=${ROS_DOMAIN_ID} ENABLE_TOF_PRINT=${ENABLE_TOF_PRINT} TOF_PRINT_STDOUT=${TOF_PRINT_STDOUT} TOF_PRINT_FILE=${TOF_PRINT_FILE}"
+    PREFIX="sudo -E env LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-} FASTRTPS_DEFAULT_PROFILES_FILE=${FASTRTPS_DEFAULT_PROFILES_FILE} ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY} ROS_DOMAIN_ID=${ROS_DOMAIN_ID} ENABLE_TOF_PRINT=${ENABLE_TOF_PRINT} TOF_PRINT_STDOUT=${TOF_PRINT_STDOUT} TOF_PRINT_FILE=${TOF_PRINT_FILE} TOF_DEBUG=${TOF_DEBUG} TOF_PUBLISH_INVALID=${TOF_PUBLISH_INVALID}"
 fi
 
 if ! ip link show "${IFNAME}" >/dev/null 2>&1; then
@@ -106,6 +108,7 @@ fi
 
 echo "[START] ifname=${IFNAME} vehicle=${START_VEHICLE} gimbal=${GIMBAL} sudo=${USE_SUDO}"
 TAIL_PID=""
+VEHICLE_PID=""
 if [[ "${START_VEHICLE}" == "true" ]]; then
     mkdir -p var_data/terminal var_data/tof var_data/chassis_trace var_data/omni var_data/lift var_data/calibration
     if [[ ! -w var_data ]]; then
@@ -118,20 +121,46 @@ if [[ "${START_VEHICLE}" == "true" ]]; then
         fi
     fi
     : > "${TOF_PRINT_FILE}"
-    echo "[MONITOR] tailing ToF/IMU/Lift feedback: ${TOF_PRINT_FILE}"
-    tail -n 0 -F "${TOF_PRINT_FILE}" &
-    TAIL_PID="$!"
-    trap 'if [[ -n "${TAIL_PID}" ]]; then kill "${TAIL_PID}" >/dev/null 2>&1 || true; fi' EXIT INT TERM
+    if [[ "${TOF_PRINT_STDOUT}" == "1" ]]; then
+        echo "[MONITOR] realtime ToF/IMU/Lift feedback on controller stdout"
+    else
+        echo "[MONITOR] ToF/IMU/Lift feedback logging to: ${TOF_PRINT_FILE}"
+        echo "[MONITOR] tail disabled because the 200Hz live UI must not be replayed through tail"
+    fi
+    echo "[START] launching vehicle controller directly"
+    if [[ "${USE_SUDO}" == "true" ]]; then
+        sudo -E env \
+            LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}" \
+            FASTRTPS_DEFAULT_PROFILES_FILE="${FASTRTPS_DEFAULT_PROFILES_FILE}" \
+            ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY}" \
+            ROS_DOMAIN_ID="${ROS_DOMAIN_ID}" \
+            ENABLE_TOF_PRINT="${ENABLE_TOF_PRINT}" \
+            TOF_PRINT_STDOUT="${TOF_PRINT_STDOUT}" \
+            TOF_PRINT_FILE="${TOF_PRINT_FILE}" \
+            TOF_DEBUG="${TOF_DEBUG}" \
+            TOF_PUBLISH_INVALID="${TOF_PUBLISH_INVALID}" \
+            "${WS_DIR}/install/linkx_soem_demo/lib/linkx_soem_demo/linkx_soem_demo" "${IFNAME}" &
+    else
+        env \
+            FASTRTPS_DEFAULT_PROFILES_FILE="${FASTRTPS_DEFAULT_PROFILES_FILE}" \
+            ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY}" \
+            ROS_DOMAIN_ID="${ROS_DOMAIN_ID}" \
+            ENABLE_TOF_PRINT="${ENABLE_TOF_PRINT}" \
+            TOF_PRINT_STDOUT="${TOF_PRINT_STDOUT}" \
+            TOF_PRINT_FILE="${TOF_PRINT_FILE}" \
+            TOF_DEBUG="${TOF_DEBUG}" \
+            TOF_PUBLISH_INVALID="${TOF_PUBLISH_INVALID}" \
+            "${WS_DIR}/install/linkx_soem_demo/lib/linkx_soem_demo/linkx_soem_demo" "${IFNAME}" &
+    fi
+    VEHICLE_PID="$!"
+    trap 'if [[ -n "${VEHICLE_PID}" ]]; then kill "${VEHICLE_PID}" >/dev/null 2>&1 || true; fi; if [[ -n "${TAIL_PID}" ]]; then kill "${TAIL_PID}" >/dev/null 2>&1 || true; fi' EXIT INT TERM
 fi
 
 LAUNCH_ARGS=(
     "ifname:=${IFNAME}"
-    "start_vehicle_control:=${START_VEHICLE}"
+    "start_vehicle_control:=false"
     "start_gimbal_bridge:=${GIMBAL}"
 )
-if [[ -n "${PREFIX}" ]]; then
-    LAUNCH_ARGS+=("vehicle_prefix:=${PREFIX}")
-fi
 
 ros2 launch linkx_bringup full_system.launch.py "${LAUNCH_ARGS[@]}" 2>&1 | awk '
         /^\[INFO\] \[launch\]: All log files can be found below / { next }

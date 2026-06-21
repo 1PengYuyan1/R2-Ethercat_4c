@@ -77,6 +77,7 @@ set(VEHICLE_CONTROL_SRC
     src/diagnostics/can_terminal/can_terminal_printer.cpp
     src/diagnostics/task_terminal/task_terminal_diagnostics.cpp
     src/diagnostics/timing_terminal/timing_terminal_printer.cpp
+    src/tof/tfmini_s_range_publisher.cpp
 
     # 3_Chariot —— 全向轮工况
     src/vehicle_control/3_Chariot/chassis/omni_wheel/crt_chassis_omni.cpp
@@ -86,6 +87,7 @@ set(VEHICLE_CONTROL_SRC
 
     # 2_Device
     src/vehicle_control/2_Device/Motor/dvc_motor_dm.cpp
+    src/vehicle_control/2_Device/Ethercat/ecat_io_thread/ecat_io_thread.cpp
     ${LINKX_BRIDGE_SRC}
 
     # 1_Middleware
@@ -110,6 +112,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     include/linkx_soem_demo/vehicle_control/2_Device/Motor
     include/linkx_soem_demo/vehicle_control/2_Device/Ethercat
     include/linkx_soem_demo/vehicle_control/2_Device/Ethercat/ecat_manager
+    include/linkx_soem_demo/vehicle_control/2_Device/Ethercat/ecat_io_thread
     include/linkx_soem_demo/vehicle_control/2_Device/Ethercat/linkx4c_handler
     include/linkx_soem_demo/vehicle_control/2_Device/rt_timing
     include/linkx_soem_demo/vehicle_control/3_Chariot
@@ -125,6 +128,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     src/diagnostics/can_terminal
     src/diagnostics/task_terminal
     src/diagnostics/timing_terminal
+    src/tof
 )
 
 target_link_libraries(${PROJECT_NAME}

@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <pthread.h>
 
 #define LINKX_CAN_CHANNEL_NUM 4
 #define LINKX_CAN_MAX_DATA_BYTES 64
@@ -98,6 +99,10 @@ typedef struct
     can_rx_pdo_t rx_pdos[LINKX_CAN_CHANNEL_NUM]; // 接收 PDO 缓存
     linkx_tx_queue_t tx_queues[LINKX_CAN_CHANNEL_NUM]; // 发送队列（防单槽覆盖）
     linkx_can_stats_t can_stats[LINKX_CAN_CHANNEL_NUM]; // CAN 收发统计
+
+    // 保护 tx_queues：生产者（控制线程 linkx_send_can）与消费者（IO 线程
+    // linkx_send_pdos）跨线程访问同一组发送环形队列时必须串行化。
+    pthread_mutex_t tx_lock;
 
     struct ecx_context *master; // 主站上下文
     struct ec_slave *slave;     // 从站信息

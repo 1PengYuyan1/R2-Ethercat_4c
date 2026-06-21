@@ -490,7 +490,7 @@ Class_Chariot_Imu_Heading_Hold::Snapshot Class_Robot::Get_Imu_Snapshot()
 // 全向轮工况分发策略（新车头为原车尾）：
 //   - ch0 → index 1/2 全向轮 + 前抬升 + 辅助电机，通过 Rx_ID 区分（0x11..0x17）
 //   - ch1 → index 0/3 全向轮 + 后抬升，通过 Rx_ID 区分（0x11..0x15）
-//   - ch2 → ToF(CH2 ID 0x01..0x04)
+//   - ToF 由 task.cpp 的 slave2 CAN2/CAN3 接收循环直接送入 Lift
 //   - 其它通道 / 通道+ID 不匹配 → 累计到 unhandled_can_frames_
 
 void Class_Robot::CAN_Rx_Callback(uint8_t CAN_Channel, uint32_t CAN_ID, uint8_t *CAN_Data, uint8_t CAN_Dlen)

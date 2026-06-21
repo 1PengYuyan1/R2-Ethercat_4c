@@ -101,6 +101,11 @@ public:
 
     void Init(linkx_t *__LinkX_Handler);
     bool CAN_Rx_Callback(uint8_t CAN_Channel, uint32_t CAN_ID, uint8_t *CAN_Data, uint8_t CAN_Dlen = 8);
+    bool CAN_Rx_ToF_Frame(uint32_t slave_id,
+                          uint8_t CAN_Channel,
+                          uint32_t CAN_ID,
+                          const uint8_t *CAN_Data,
+                          uint8_t CAN_Dlen = 8);
 
     void TIM_100ms_Alive_PeriodElapsedCallback();
     void TIM_2ms_Control_PeriodElapsedCallback();
@@ -192,7 +197,6 @@ protected:
     uint32_t Stair_Attitude_Stable_Ticks = 0;
 
     void Init_Motor_Params();
-    bool CAN_Rx_ToF(uint8_t CAN_Channel, uint32_t CAN_ID, const uint8_t *CAN_Data, uint8_t CAN_Dlen);
     void Parse_ToF_Byte(Enum_Chariot_Lift_ToF_Sensor sensor, uint8_t byte);
     void Update_Stair_Auto();
     void Enter_Stair_State(Enum_Chariot_Lift_Stair_State state);

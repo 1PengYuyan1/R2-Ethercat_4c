@@ -22,7 +22,7 @@ constexpr float kLiftRetractRodAngle = kLiftRetractMotorAngle / kLiftMotorToRodR
 constexpr float kLiftFrontRaiseRodAngle = kLiftFrontRaiseMotorAngle / kLiftMotorToRodRatio;
 constexpr float kLiftRearRaiseRodAngle = kLiftRearRaiseMotorAngle / kLiftMotorToRodRatio;
 constexpr float kLiftSCurvePeakVelocityScale = 1.875f;
-constexpr uint8_t kLiftToFCanChannel = 2;
+constexpr uint32_t kLiftToFSlaveId = 2U;
 constexpr uint8_t kLiftToFOfflineTicks = 5;  // 5 * 100ms
 constexpr uint16_t kLiftToFInvalidStrength = 65535U;
 constexpr uint16_t kLiftToFTooFarCm = 65532U;
@@ -50,6 +50,8 @@ struct LiftHoldFeedforwardTable
 
 struct LiftToFCanMap
 {
+    uint32_t slave_id;
+    uint8_t channel;
     uint32_t id;
     Enum_Chariot_Lift_ToF_Sensor sensor;
 };
@@ -102,10 +104,10 @@ constexpr LiftHoldFeedforwardTable kLiftHoldFeedforward[CHARIOT_LIFT_MODULE_NUM]
 };
 
 constexpr LiftToFCanMap kLiftToFCanMap[CHARIOT_LIFT_TOF_NUM] = {
-    {0x001U, CHARIOT_LIFT_TOF_UP_FRONT},
-    {0x002U, CHARIOT_LIFT_TOF_UP_BACK},
-    {0x003U, CHARIOT_LIFT_TOF_DOWN_FRONT},
-    {0x004U, CHARIOT_LIFT_TOF_DOWN_BACK},
+    {kLiftToFSlaveId, 3U, 0x02U, CHARIOT_LIFT_TOF_UP_FRONT},
+    {kLiftToFSlaveId, 2U, 0x01U, CHARIOT_LIFT_TOF_UP_BACK},
+    {kLiftToFSlaveId, 3U, 0x01U, CHARIOT_LIFT_TOF_DOWN_FRONT},
+    {kLiftToFSlaveId, 2U, 0x02U, CHARIOT_LIFT_TOF_DOWN_BACK},
 };
 
 constexpr StairStateConfig kStairStateConfigs[] = {
@@ -322,11 +324,16 @@ float Calibrated_Lift_Raise_Rod_Angle(Enum_Chariot_Lift_Module module, float req
     return requested_rod_angle;
 }
 
-bool Match_Lift_ToF_Sensor(uint32_t can_id_std, Enum_Chariot_Lift_ToF_Sensor &sensor)
+bool Match_Lift_ToF_Sensor(uint32_t slave_id,
+                           uint8_t channel,
+                           uint32_t can_id_std,
+                           Enum_Chariot_Lift_ToF_Sensor &sensor)
 {
     for (const auto &item : kLiftToFCanMap)
     {
-        if (item.id == can_id_std)
+        if (item.slave_id == slave_id &&
+            item.channel == channel &&
+            item.id == can_id_std)
         {
             sensor = item.sensor;
             return true;
@@ -501,7 +508,7 @@ bool Class_Chariot_Lift::CAN_Rx_Callback(uint8_t CAN_Channel, uint32_t CAN_ID, u
     const uint32_t can_id_std = CAN_ID & 0x7FFU;
     Enum_Chariot_Lift_Module module;
 
-    if (CAN_Rx_ToF(CAN_Channel, can_id_std, CAN_Data, CAN_Dlen))
+    if (CAN_Rx_ToF_Frame(1U, CAN_Channel, can_id_std, CAN_Data, CAN_Dlen))
         return true;
 
     /* 新车头为原车尾：CAN0=车头抬升模块，CAN1=车尾抬升模块 */
@@ -537,16 +544,17 @@ bool Class_Chariot_Lift::CAN_Rx_Callback(uint8_t CAN_Channel, uint32_t CAN_ID, u
     return false;
 }
 
-bool Class_Chariot_Lift::CAN_Rx_ToF(uint8_t CAN_Channel,
-                                    uint32_t CAN_ID,
-                                    const uint8_t *CAN_Data,
-                                    uint8_t CAN_Dlen)
+bool Class_Chariot_Lift::CAN_Rx_ToF_Frame(uint32_t slave_id,
+                                          uint8_t CAN_Channel,
+                                          uint32_t CAN_ID,
+                                          const uint8_t *CAN_Data,
+                                          uint8_t CAN_Dlen)
 {
-    if (CAN_Channel != kLiftToFCanChannel || CAN_Data == nullptr || CAN_Dlen == 0)
+    if (CAN_Data == nullptr || CAN_Dlen == 0)
         return false;
 
     Enum_Chariot_Lift_ToF_Sensor sensor = CHARIOT_LIFT_TOF_UP_FRONT;
-    if (!Match_Lift_ToF_Sensor(CAN_ID, sensor))
+    if (!Match_Lift_ToF_Sensor(slave_id, CAN_Channel, CAN_ID & 0x7FFU, sensor))
         return false;
 
     const uint8_t n = (CAN_Dlen > 64U) ? 64U : CAN_Dlen;

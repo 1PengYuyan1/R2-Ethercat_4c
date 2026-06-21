@@ -18,10 +18,10 @@
 namespace
 {
 constexpr int kWheelCount = 4;
-constexpr uint32_t kCanStatPrintPeriodMs = 2;
-constexpr uint32_t kLiveDashboardPeriodMs = 2;
-constexpr uint32_t kToFPrintPeriodMs = 2;
-constexpr uint32_t kDefaultToFButtonLogPeriodMs = 2;
+constexpr uint32_t kCanStatPrintPeriodMs = 5;
+constexpr uint32_t kLiveDashboardPeriodMs = 5;
+constexpr uint32_t kToFPrintPeriodMs = 5;
+constexpr uint32_t kDefaultToFButtonLogPeriodMs = 5;
 constexpr float kLiftMotorToRodRatio = 3.0f;
 
 bool g_enable_can_stat_print = false;
@@ -357,8 +357,9 @@ void PrintLiveDashboard(Class_Robot &robot)
             char range_buf[24];
             FormatRange(tof.range_m, range_buf, sizeof(range_buf));
             n += std::snprintf(buf + n, kBufSize - n,
-                               "  %-10s %s range=%s raw=%ucm strength=%u frames=%u\n",
+                               "  %-10s %-22s %s range=%s raw=%ucm strength=%u frames=%u\n",
                                LiftToFName(i),
+                               LiftToFTopic(i),
                                tof.online ? (tof.valid ? "OK " : "BAD") : "OFF",
                                range_buf,
                                static_cast<unsigned>(tof.distance_cm),
@@ -411,13 +412,13 @@ void PrintToFTerminalData(Class_Robot &robot)
 
     char frame[8192];
     int n = std::snprintf(frame, sizeof(frame),
-                          "\033[2J\033[H[LIFT-TOF+IMU] refresh=%ums\n\n"
-                          "+------------------------+--------+----------+--------+----------+----------+\n"
-                          "| ToF topic              | status | range    | raw_cm | strength | frames   |\n"
-                          "+------------------------+--------+----------+--------+----------+----------+\n",
+                          "\033[2J\033[H[LIFT-TOF-IMU] refresh=%ums (200Hz)\n\n"
+                          "+------------+------------------------+--------+----------+--------+----------+----------+\n"
+                          "| ToF        | topic                  | status | range    | raw_cm | strength | frames   |\n"
+                          "+------------+------------------------+--------+----------+--------+----------+----------+\n",
                           static_cast<unsigned>(kToFPrintPeriodMs));
 
-    for (int i = 0; i < CHARIOT_LIFT_TOF_NUM && n < static_cast<int>(sizeof(frame)) - 160; ++i)
+    for (int i = 0; i < CHARIOT_LIFT_TOF_NUM && n < static_cast<int>(sizeof(frame)) - 192; ++i)
     {
         const auto sensor = static_cast<Enum_Chariot_Lift_ToF_Sensor>(i);
         const ChariotLiftToFData &tof = robot.Lift.Get_ToF_Data(sensor);
@@ -427,7 +428,8 @@ void PrintToFTerminalData(Class_Robot &robot)
         const char *value = tof.online ? range_buf : "no_data";
         const char *status = tof.online ? (tof.valid ? "OK" : "BAD") : "OFF";
         n += std::snprintf(frame + n, sizeof(frame) - n,
-                           "| %-22s | %-6s | %-8s | %6u | %8u | %8u |\n",
+                           "| %-10s | %-22s | %-6s | %-8s | %6u | %8u | %8u |\n",
+                           LiftToFName(i),
                            LiftToFTopic(i),
                            status,
                            value,
@@ -436,16 +438,42 @@ void PrintToFTerminalData(Class_Robot &robot)
                            static_cast<unsigned>(tof.frame_count));
     }
 
-    if (n < static_cast<int>(sizeof(frame)) - 1280)
+    if (n < static_cast<int>(sizeof(frame)) - 512)
     {
         n += std::snprintf(frame + n, sizeof(frame) - n,
-                           "+------------------------+--------+----------+--------+----------+----------+\n\n"
-                           "+--------+----+------+------+---------+----------+-----------+-----------+-----------+-----------+----------+\n"
-                           "| Lift   | ch | rx   | tx   | online  | ctrl     | mpos_rad  | mvel_rad  | rpos_rad  | rvel_rad  | torqueNm |\n"
-                           "+--------+----+------+------+---------+----------+-----------+-----------+-----------+-----------+----------+\n");
+                           "+------------+------------------------+--------+----------+--------+----------+----------+\n"
+                           "ToF topics: /high/up_front/range, /high/down_front/range, "
+                           "/high/up_back/range, /high/down_back/range\n\n"
+                           "+--------+----+-------------+---------+----------+\n"
+                           "| Lift   | ch | ids(rx/tx)  | online  | ctrl     |\n"
+                           "+--------+----+-------------+---------+----------+\n");
 
         for (int i = 0; i < CHARIOT_LIFT_MODULE_NUM &&
-                        n < static_cast<int>(sizeof(frame)) - 320; ++i)
+                        n < static_cast<int>(sizeof(frame)) - 160; ++i)
+        {
+            auto &motor = robot.Lift.Motor_Lift[i];
+
+            n += std::snprintf(frame + n, sizeof(frame) - n,
+                               "| %-6s | %2u | 0x%02X/0x%02X   | %-7s | %-8s |\n",
+                               LiftModuleName(i),
+                               static_cast<unsigned>(LiftModuleCanChannel(i)),
+                               static_cast<unsigned>(motor.DM_CAN_Rx_ID),
+                               static_cast<unsigned>(motor.DM_CAN_Tx_ID),
+                               DmStatusName(motor.Get_Status()),
+                               DmControlStatusName(motor.Get_Now_Control_Status()));
+        }
+    }
+
+    if (n < static_cast<int>(sizeof(frame)) - 768)
+    {
+        n += std::snprintf(frame + n, sizeof(frame) - n,
+                           "+--------+----+-------------+---------+----------+\n\n"
+                           "+--------+-----------+-----------+-----------+-----------+----------+\n"
+                           "| Lift   | mpos_rad  | mvel_rad  | rpos_rad  | rvel_rad  | torqueNm |\n"
+                           "+--------+-----------+-----------+-----------+-----------+----------+\n");
+
+        for (int i = 0; i < CHARIOT_LIFT_MODULE_NUM &&
+                        n < static_cast<int>(sizeof(frame)) - 192; ++i)
         {
             auto &motor = robot.Lift.Motor_Lift[i];
             const float motor_pos = motor.Get_Now_Radian();
@@ -454,40 +482,39 @@ void PrintToFTerminalData(Class_Robot &robot)
             const float rod_vel = motor_vel / kLiftMotorToRodRatio;
 
             n += std::snprintf(frame + n, sizeof(frame) - n,
-                               "| %-6s | %2u | 0x%02X | 0x%02X | %-7s | %-8s | %9.3f | %9.3f | %9.3f | %9.3f | %8.3f |\n",
+                               "| %-6s | %9.3f | %9.3f | %9.3f | %9.3f | %8.3f |\n",
                                LiftModuleName(i),
-                               static_cast<unsigned>(LiftModuleCanChannel(i)),
-                               static_cast<unsigned>(motor.DM_CAN_Rx_ID),
-                               static_cast<unsigned>(motor.DM_CAN_Tx_ID),
-                               DmStatusName(motor.Get_Status()),
-                               DmControlStatusName(motor.Get_Now_Control_Status()),
                                motor_pos,
                                motor_vel,
                                rod_pos,
                                rod_vel,
                                motor.Get_Now_Torque());
         }
-    }
 
-    if (n < static_cast<int>(sizeof(frame)) - 512)
-    {
         n += std::snprintf(frame + n, sizeof(frame) - n,
-                           "+--------+----+------+------+---------+----------+-----------+-----------+-----------+-----------+----------+\n"
-                           "Lift target: CAN0/CAN1 Tx 0x05 feedback Rx 0x15, rod = motor / 3\n\n"
-                           "+---------+----------+-----------+-----------+-----------+-----------+-----------+-----------+\n"
-                           "| IMU     | age_ms   | roll_deg  | pitch_deg | yaw_deg   | gyro_x    | gyro_y    | gyro_z    |\n"
-                           "+---------+----------+-----------+-----------+-----------+-----------+-----------+-----------+\n"
-                           "| %-7s | %-8s | %9s | %9s | %9s | %9s | %9s | %9s |\n"
-                           "+---------+----------+-----------+-----------+-----------+-----------+-----------+-----------+\n"
-                           "| IMU     | accel_x  | accel_y   | accel_z   | units                                  |\n"
-                           "+---------+----------+-----------+-----------+----------------------------------------+\n"
-                           "| %-7s | %8s | %9s | %9s | gyro=rad/s, accel=m/s^2              |\n"
-                           "+---------+----------+-----------+-----------+----------------------------------------+\n",
+                           "+--------+-----------+-----------+-----------+-----------+----------+\n"
+                           "Lift target: CAN0/CAN1 tx=0x05 rx=0x15, rod=motor/3\n\n"
+                           "+---------+----------+-----------+-----------+-----------+\n"
+                           "| IMU     | age_ms   | roll_deg  | pitch_deg | yaw_deg   |\n"
+                           "+---------+----------+-----------+-----------+-----------+\n"
+                           "| %-7s | %-8s | %9s | %9s | %9s |\n"
+                           "+---------+----------+-----------+-----------+-----------+\n\n"
+                           "+---------+-----------+-----------+-----------+----------+\n"
+                           "| IMU     | gyro_x    | gyro_y    | gyro_z    | units    |\n"
+                           "+---------+-----------+-----------+-----------+----------+\n"
+                           "| %-7s | %9s | %9s | %9s | rad/s    |\n"
+                           "+---------+-----------+-----------+-----------+----------+\n\n"
+                           "+---------+-----------+-----------+-----------+----------+\n"
+                           "| IMU     | accel_x   | accel_y   | accel_z   | units    |\n"
+                           "+---------+-----------+-----------+-----------+----------+\n"
+                           "| %-7s | %9s | %9s | %9s | m/s^2    |\n"
+                           "+---------+-----------+-----------+-----------+----------+\n",
                            ImuStateName(imu),
                            imu_age,
                            roll_deg,
                            pitch_deg,
                            yaw_deg,
+                           ImuStateName(imu),
                            gyro_x,
                            gyro_y,
                            gyro_z,
@@ -507,7 +534,7 @@ void PrintToFTerminalData(Class_Robot &robot)
         sizeof(frame) - 1U;
 
     bool wrote_file = false;
-    if (g_tof_print_stream.is_open())
+    if (!g_tof_print_stdout && g_tof_print_stream.is_open())
     {
         g_tof_print_stream.write(frame, len);
         g_tof_print_stream.flush();
