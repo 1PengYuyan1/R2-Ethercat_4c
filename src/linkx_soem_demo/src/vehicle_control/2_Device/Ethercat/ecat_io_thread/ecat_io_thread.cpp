@@ -107,69 +107,80 @@ void EcatIoThread::Run()
     if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != 0)
         std::fprintf(stderr, "[ECAT-IO] WARNING: failed to set RT priority (run as root?)\n");
 
-    std::vector<EcatRawCanMsg> batch;
-    batch.reserve(64);
-
     // 仅以 running_ 为退出条件，不绑定 master->is_running：收到停机请求后控制
     // 线程会退出主循环并进入失能阶段，此时 IO 线程仍需继续 sync + send_pdos
     // 把失能帧刷到总线，直到外部显式 Stop()。
     while (running_.load(std::memory_order_relaxed) && master_ != nullptr)
     {
-        // 进站：周期交换 + 取回输入 PDO。
-        ecat_master_sync(master_);
-        io_loops_.fetch_add(1, std::memory_order_relaxed);
+        PollReceiveOnce();
+        FlushSendOnce();
+    }
+}
 
-        for (size_t mi = 0; mi < linkx_count_; ++mi)
-        {
-            if (linkx_[mi].enabled)
-                linkx_recv_pdos(linkx_[mi].linkx);
-        }
+// 收一拍：sync + recv_pdos + 去重读取所有通道入队。
+void EcatIoThread::PollReceiveOnce()
+{
+    if (master_ == nullptr)
+        return;
 
-        // 抽干所有通道的去重接收，攒成一批。
-        batch.clear();
-        can_msg_t msg {};
-        for (size_t mi = 0; mi < linkx_count_; ++mi)
+    // 进站：周期交换 + 取回输入 PDO。
+    ecat_master_sync(master_);
+    io_loops_.fetch_add(1, std::memory_order_relaxed);
+
+    for (size_t mi = 0; mi < linkx_count_; ++mi)
+    {
+        if (linkx_[mi].enabled)
+            linkx_recv_pdos(linkx_[mi].linkx);
+    }
+
+    // 抽干所有通道的去重接收，攒成一批后一次性入队。
+    std::vector<EcatRawCanMsg> batch;
+    can_msg_t msg {};
+    for (size_t mi = 0; mi < linkx_count_; ++mi)
+    {
+        if (!linkx_[mi].enabled)
+            continue;
+        linkx_t *linkx = linkx_[mi].linkx;
+        for (uint8_t ch = 0; ch < LINKX_CAN_CHANNEL_NUM; ++ch)
         {
-            if (!linkx_[mi].enabled)
-                continue;
-            linkx_t *linkx = linkx_[mi].linkx;
-            for (uint8_t ch = 0; ch < LINKX_CAN_CHANNEL_NUM; ++ch)
+            const auto recv_time = std::chrono::steady_clock::now();
+            while (QuickRecvIsolated(linkx, mi, ch, &msg))
             {
-                const auto recv_time = std::chrono::steady_clock::now();
-                while (QuickRecvIsolated(linkx, mi, ch, &msg))
-                {
-                    EcatRawCanMsg raw;
-                    raw.slave_id = linkx_[mi].slave_id;
-                    raw.channel = ch;
-                    raw.msg = msg;
-                    raw.recv_time = recv_time;
-                    batch.push_back(raw);
-                }
+                EcatRawCanMsg raw;
+                raw.slave_id = linkx_[mi].slave_id;
+                raw.channel = ch;
+                raw.msg = msg;
+                raw.recv_time = recv_time;
+                batch.push_back(raw);
             }
         }
-
-        if (!batch.empty())
-        {
-            std::lock_guard<std::mutex> lock(rx_mutex_);
-            for (const auto &raw : batch)
-                rx_queue_.push(raw);
-        }
-
-        // send_pdos 之前的钩子：把本周期需要刷出的帧入队（如 ToF 复位帧）。
-        if (pre_send_hook_)
-            pre_send_hook_();
-
-        // 出站：把控制线程经 linkx_send_can 入队的 TX 帧刷到从站输出。
-        for (size_t mi = 0; mi < linkx_count_; ++mi)
-        {
-            if (linkx_[mi].enabled)
-                linkx_send_pdos(linkx_[mi].linkx);
-        }
-
-        // send_pdos 之后的钩子：清理一次性复位帧，保证只发一个 EtherCAT 周期。
-        if (post_send_hook_)
-            post_send_hook_();
     }
+
+    if (!batch.empty())
+    {
+        std::lock_guard<std::mutex> lock(rx_mutex_);
+        for (const auto &raw : batch)
+            rx_queue_.push(raw);
+    }
+}
+
+// 发一拍：pre 钩子 + send_pdos + post 钩子。
+void EcatIoThread::FlushSendOnce()
+{
+    // send_pdos 之前的钩子：把本周期需要刷出的帧入队（如 ToF 复位帧）。
+    if (pre_send_hook_)
+        pre_send_hook_();
+
+    // 出站：把控制线程经 linkx_send_can 入队的 TX 帧刷到从站输出。
+    for (size_t mi = 0; mi < linkx_count_; ++mi)
+    {
+        if (linkx_[mi].enabled)
+            linkx_send_pdos(linkx_[mi].linkx);
+    }
+
+    // send_pdos 之后的钩子：清理一次性复位帧，保证只发一个 EtherCAT 周期。
+    if (post_send_hook_)
+        post_send_hook_();
 }
 
 void EcatIoThread::Start()

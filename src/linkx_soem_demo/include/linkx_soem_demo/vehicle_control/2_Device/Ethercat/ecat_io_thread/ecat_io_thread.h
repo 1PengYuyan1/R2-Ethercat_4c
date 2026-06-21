@@ -64,6 +64,13 @@ public:
     void Start();  // 拉起 RT 优先级 IO 线程
     void Stop();   // 通知退出并 join（幂等）
 
+    // 同步模式用：由控制线程直接调用，不另起线程。
+    //   PollReceiveOnce() —— 一次 sync + recv_pdos + 去重读取入队（收一拍）
+    //   FlushSendOnce()   —— pre 钩子 + send_pdos + post 钩子（发一拍）
+    // 与 IO 线程 Run() 内部完全相同的逻辑，便于在同步/异步两种模式间切换。
+    void PollReceiveOnce();
+    void FlushSendOnce();
+
     // 消费者（控制线程）调用：取走 IO 线程已捕获的全部原始帧，追加到 out。
     void DrainRx(std::vector<EcatRawCanMsg> &out);
 

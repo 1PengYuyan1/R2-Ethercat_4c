@@ -30,6 +30,7 @@
 #include "ecat_io_thread.h"
 #include "ecat_manager.h"
 #include "linkx4c_handler.h"
+#include "can_terminal_printer.h"
 #include "robot.h"
 #include "task_terminal_diagnostics.h"
 #include "tfmini_s_range_publisher.h"
@@ -83,12 +84,25 @@ constexpr uint8_t kCanDataPrescaler = 1;     ///< 80MHz / (1 * (1 + 12 + 3)) = 5
 constexpr uint8_t kCanDataSeg1 = 12;
 constexpr uint8_t kCanDataSeg2 = 3;
 constexpr uint8_t kCanDataSjw = 3;
-constexpr uint32_t kVehicleSlaveId = 1U;
-constexpr uint32_t kTofSlave2Id = 2U;
+constexpr uint32_t kVehicleSlaveId = 1U;   // EtherCAT slave 1（linkx_dev）
+constexpr uint32_t kTofSlave2Id = 2U;      // EtherCAT slave 2（tof_linkx_dev）
+
+// 电机实际所在的 EtherCAT 从站（其 CAN0/CAN1 接整车电机）。
+// 本车实测：电机与 slave2 的 up/down ToF 在同一 LinkX 模块上，故默认 2。
+// 若硬件接线不同，可用环境变量 R2_MOTOR_SLAVE=1/2 覆盖，无需重编译。
+uint32_t g_motor_slave_id = 2U;
 
 bool tof_slave2_enabled = false;
 std::shared_ptr<rclcpp::Node> tof_node;
 TfminiSRangePublisher tof_range_publisher;
+
+// 返回电机所在从站对应的 LinkX 句柄；若该从站不可用则回退到 slave1。
+linkx_t *Motor_Linkx()
+{
+    if (g_motor_slave_id == kTofSlave2Id)
+        return tof_slave2_enabled ? &tof_linkx_dev : &linkx_dev;
+    return &linkx_dev;
+}
 
 // EtherCAT 全速 IO 线程（生产者）。CAN 帧去重读取/入队、TX 刷出都在它内部完成；
 // 控制线程通过 DrainRx 取帧消费。详见 ecat_io_thread.h。
@@ -143,6 +157,67 @@ static bool Configure_Linkx_Channel_1M5M(linkx_t *linkx, uint8_t ch)
     return true;
 }
 
+// 带重试地把某个 CAN 通道使能（SDO 0x8001），返回是否成功（WKC>0）。
+static bool Reenable_Linkx_Channel(linkx_t *linkx, uint8_t ch, int max_retries)
+{
+    for (int attempt = 0; attempt < max_retries; ++attempt)
+    {
+        if (linkx_switch_can_channel(linkx, ch, true))
+            return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return false;
+}
+
+// 进入 OP 之后重新断言所有 CAN 通道使能。
+//
+// 背景：部分 LinkX 固件在写波特率（0x8002 触发 0x0B）重配 FDCAN 外设、或在
+// SAFE_OP→OP 跃迁时，会复位通道使能位（0x8001）。结果是 SAFE_OP 阶段写过的
+// 使能丢失，该通道既收不到也发不出——电机所在的 slave1 CAN0/CAN1 一旦如此，
+// 表现就是“按 START 使能电机毫无反应”。SDO 在 OP 态经邮箱仍可写，这里在启动
+// IO 线程之前（无并发 EtherCAT 访问）逐通道带重试地重新使能，并打印结果便于排查。
+// 使能一块从站的全部 4 个 CAN 通道，把结果填进 ok[] 并整体返回是否全成功。
+static void Enable_All_Channels(linkx_t *linkx, bool ok[kChannelCount])
+{
+    for (int ch = 0; ch < kChannelCount; ++ch)
+        ok[ch] = Reenable_Linkx_Channel(linkx, static_cast<uint8_t>(ch), 5);
+}
+
+static void Reassert_Can_Channels_After_Op()
+{
+    bool s1[kChannelCount] = {false, false, false, false};
+    bool s2[kChannelCount] = {false, false, false, false};
+
+    Enable_All_Channels(&linkx_dev, s1);
+    if (tof_slave2_enabled)
+        Enable_All_Channels(&tof_linkx_dev, s2);
+
+    // ===== 大终端打印：两块 EtherCAT 模块全部 CAN 通道的使能状态 =====
+    auto cell = [](bool ok) { return ok ? " OK " : "FAIL"; };
+    std::fprintf(stderr,
+        "\n"
+        "================== CAN CHANNEL ENABLE (after OP) ==================\n"
+        "  slave  |  CAN0  |  CAN1  |  CAN2  |  CAN3  |  note\n"
+        "  -------+--------+--------+--------+--------+----------------------\n"
+        "  1 (id=%u)|  %s  |  %s  |  %s  |  %s  | vehicle (motors expected)\n",
+        kVehicleSlaveId, cell(s1[0]), cell(s1[1]), cell(s1[2]), cell(s1[3]));
+
+    if (tof_slave2_enabled)
+        std::fprintf(stderr,
+            "  2 (id=%u)|  %s  |  %s  |  %s  |  %s  | second module\n",
+            kTofSlave2Id, cell(s2[0]), cell(s2[1]), cell(s2[2]), cell(s2[3]));
+    else
+        std::fprintf(stderr,
+            "  2       |   --   |   --   |   --   |   --   | not present\n");
+
+    std::fprintf(stderr,
+        "==================================================================\n"
+        "  提示：电机所在通道必须为 OK。若电机仍无反应，对照本表确认电机实际\n"
+        "  接在哪个 slave/CAN 上；若与 robot 发送的 slave(=%u) 不一致，即“从站搞错”。\n"
+        "==================================================================\n\n",
+        kVehicleSlaveId);
+}
+
 /**
  * @brief EtherCAT 主站 + 单 LinkX 4 通道 CAN-FD 1M/5M 初始化。
  *        slave1 作为整车主控；若总线上存在 slave2，则作为 TFmini-S 测距从站接入。
@@ -181,24 +256,20 @@ static bool Init_Ethercat_And_Linkx(const char *ifname)
     if (master.ctx.slavecount >= static_cast<int>(kTofSlave2Id))
     {
         linkx_init(&tof_linkx_dev, kTofSlave2Id, &master.ctx);
-        if (!Configure_Linkx_Channel_1M5M(&tof_linkx_dev, 2U) ||
-            !Configure_Linkx_Channel_1M5M(&tof_linkx_dev, 3U))
+        // 诊断：两块模块的全部 4 路通道都配 1M/5M（不再只 CAN2/3），这样不论电机
+        // 实际接在哪个从站/通道，都已按正确波特率配置。单通道失败只告警不禁用。
+        for (int ch = 0; ch < kChannelCount; ++ch)
         {
-            std::fprintf(stderr,
-                         "[TFMINI-S] slave2 CAN2/CAN3 config failed; ToF publishing disabled, vehicle continues\n");
-            tof_slave2_enabled = false;
+            if (!Configure_Linkx_Channel_1M5M(&tof_linkx_dev, static_cast<uint8_t>(ch)))
+                std::fprintf(stderr, "[R2] slave2 CAN%d 1M/5M config failed (continuing)\n", ch);
         }
-        else
-        {
-            tof_slave2_enabled = true;
-            std::fprintf(stderr,
-                         "[TFMINI-S] slave2 enabled for CAN2/CAN3 TFmini-S publishing\n");
-        }
+        tof_slave2_enabled = true;
+        std::fprintf(stderr, "[R2] slave2 present: configured CAN0-3 @1M/5M\n");
     }
     else
     {
         std::fprintf(stderr,
-                     "[TFMINI-S] EtherCAT slave2 not found; publishing only slave1 ToF topics\n");
+                     "[R2] EtherCAT slave2 not found; slave1 only\n");
     }
 
     if (!ecat_master_bring_online(&master))
@@ -207,12 +278,22 @@ static bool Init_Ethercat_And_Linkx(const char *ifname)
         return false;
     }
 
+    // 进入 OP 后重新断言通道使能，确保 SAFE_OP 阶段写的使能不会因波特率重配或
+    // OP 跃迁被复位（尤其是电机所在的 slave1 CAN0/CAN1）。
+    Reassert_Can_Channels_After_Op();
+
     return true;
 }
 
 static void Init_Robot_Logic()
 {
-    robot.Init(&linkx_dev);
+    // 电机绑定到其实际所在的从站（默认 slave2 的 CAN0/CAN1）。
+    linkx_t *motor_linkx = Motor_Linkx();
+    std::fprintf(stderr,
+                 "[R2] ===== MOTOR bus = EtherCAT slave %u (CAN0/CAN1) =====\n"
+                 "[R2]       (覆盖用 R2_MOTOR_SLAVE=1/2；电机收/发都走该从站)\n",
+                 g_motor_slave_id);
+    robot.Init(motor_linkx);
     robot.Start_ROS2_Bridge();
 
     if (rclcpp::ok())
@@ -230,11 +311,15 @@ static void Init_Robot_Logic()
 // ============================================================================
 
 /**
- * @brief 消费 IO 线程捕获的原始 CAN 帧，逐帧分发给 ToF 与 Robot。
+ * @brief 消费捕获的原始 CAN 帧，逐帧分发给 ToF 与 Robot。
  *
- *  分发规则与原 Pump_CAN_Receive 一致：
- *    - slave1（整车）所有通道：ToF.HandleCanFrame + robot.CAN_Rx_Callback
- *    - slave2（ToF）所有通道：ToF.HandleCanFrame + robot.Lift.CAN_Rx_ToF_Frame
+ *  分发规则：
+ *    - 所有从站所有通道：ToF.HandleCanFrame（按 kSensorMap 的 slave/通道/ID 自行匹配）
+ *    - 电机所在从站（g_motor_slave_id）：robot.CAN_Rx_Callback（电机反馈）
+ *    - slave2：robot.Lift.CAN_Rx_ToF_Frame（升降用的 up/down ToF）
+ *
+ *  电机反馈只从电机实际所在的从站投递给电机对象，避免把另一模块上同 ID 的
+ *  ToF 帧（id 0x01/0x02）误当成电机反馈。
  */
 static void Consume_CAN_Rx()
 {
@@ -250,11 +335,12 @@ static void Consume_CAN_Rx()
                                            raw.msg.dlen,
                                            raw.msg.timestamp);
 
-        if (raw.slave_id == kVehicleSlaveId)
+        if (raw.slave_id == g_motor_slave_id)
         {
             robot.CAN_Rx_Callback(raw.channel, raw.msg.id, raw.msg.data, raw.msg.dlen);
         }
-        else if (raw.slave_id == kTofSlave2Id)
+
+        if (raw.slave_id == kTofSlave2Id)
         {
             robot.Lift.CAN_Rx_ToF_Frame(raw.slave_id, raw.channel, raw.msg.id, raw.msg.data, raw.msg.dlen);
         }
@@ -288,7 +374,7 @@ static void Dispatch_Robot_Tick(uint32_t tick)
  *  实际刷到总线由仍在运行的 IO 线程 linkx_send_pdos 完成（每 ch 每周期出 1 帧）；
  *  共跑 50 cycle ≈ 50ms，保证多 ID 全部到总线。须在 ecat_io.Stop() 之前调用。
  */
-static void Disable_All_Devices()
+static void Disable_All_Devices(bool use_io_thread)
 {
     constexpr int kDisableSendCycles = 50;  ///< ≈ 50ms 总预算
     constexpr int kHardDeadlineMs    = 200; ///< 硬上限：超过即放弃
@@ -319,7 +405,13 @@ static void Disable_All_Devices()
         robot.Lift.Set_Control_Type(CHARIOT_LIFT_CONTROL_DISABLE);
         robot.Auxiliary_Motor.Set_Control_Status(Motor_DM_Status_DISABLE);
 
-        // EtherCAT 周期交换由 IO 线程持续进行；这里只负责按节拍重新入队失能帧。
+        // 同步模式：在本线程刷出；异步模式：由仍在运行的 IO 线程刷出。
+        if (!use_io_thread)
+        {
+            ecat_io.PollReceiveOnce();
+            ecat_io.FlushSendOnce();
+        }
+
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
@@ -330,6 +422,24 @@ static void Disable_All_Devices()
 static void Dispatch_Periodic_Diagnostics(uint32_t tick)
 {
     task_terminal::DispatchPeriodic(tick, robot, &linkx_dev);
+}
+
+// 诊断探针：设 R2_CAN_PROBE=1 时，每 1s 打印两块从站每通道的 tx/rx 计数。
+// 用于定位电机实际接在哪个 slave/CAN——哪个通道的 RX 在持续增长，电机反馈就在那。
+static void Probe_Both_Slaves_Can(uint32_t tick)
+{
+    static const bool enabled = (std::getenv("R2_CAN_PROBE") != nullptr);
+    if (!enabled || tick == 0 || (tick % 1000U) != 0U)
+        return;
+
+    std::printf("\n[CAN-PROBE] ===== slave1 (id=%u) =====", kVehicleSlaveId);
+    can_terminal::PrintStats(&linkx_dev);
+    if (tof_slave2_enabled)
+    {
+        std::printf("[CAN-PROBE] ===== slave2 (id=%u) =====", kTofSlave2Id);
+        can_terminal::PrintStats(&tof_linkx_dev);
+    }
+    std::fflush(stdout);
 }
 
 /**
@@ -355,20 +465,47 @@ void Robot_Control_Loop(const char *ifname)
 {
     task_terminal::ParseEnvFlags();
 
+    // 电机所在从站（默认 2）：可用 R2_MOTOR_SLAVE 覆盖。须在 Init_Robot_Logic
+    // （robot.Init 绑定电机 LinkX）之前解析。
+    if (const char *ms = std::getenv("R2_MOTOR_SLAVE"))
+    {
+        const unsigned v = static_cast<unsigned>(std::strtoul(ms, nullptr, 10));
+        if (v == kVehicleSlaveId || v == kTofSlave2Id)
+            g_motor_slave_id = v;
+        else
+            std::fprintf(stderr, "[R2] ignoring invalid R2_MOTOR_SLAVE=%s (expect 1 or 2)\n", ms);
+    }
+
     if (!Init_Ethercat_And_Linkx(ifname))
         return;
     Init_Robot_Logic();
 
-    // 生产者：RT 优先级 IO 线程全速轮询 EtherCAT。须在 bring_online 与
-    // Init_Robot_Logic（ToF/复位配置就绪）之后启动。
+    // EtherCAT 收发模式：
+    //   默认（异步）：RT 优先级 IO 线程全速 sync/recv/send_pdos，电机 TX 异步刷出。
+    //   R2_ECAT_IO_THREAD=0/false/off：回退到同步 in-loop（sync/recv/send 全在
+    //                 控制线程，与原始 busy-poll 一致，电机 TX 与 1ms tick 同步）。
+    bool use_io_thread = true;
+    if (const char *e = std::getenv("R2_ECAT_IO_THREAD"))
+    {
+        use_io_thread = !(std::strcmp(e, "0") == 0 ||
+                          std::strcmp(e, "false") == 0 ||
+                          std::strcmp(e, "off") == 0);
+    }
+
     ecat_io.Configure(&master);
     ecat_io.AddLinkx(&linkx_dev, kVehicleSlaveId, true);
     ecat_io.AddLinkx(&tof_linkx_dev, kTofSlave2Id, tof_slave2_enabled);
-    // 复位帧的发送与清理都放到 IO 线程、围绕 send_pdos 顺序执行，保证只发一次
+    // 复位帧的发送与清理围绕 send_pdos 顺序执行，保证只发一次
     // （参考 tfmini_s_can_read_main.cpp）：之前入队复位帧，之后清掉它。
     ecat_io.SetPreSendHook([]() { tof_range_publisher.ServiceResetRequests(); });
     ecat_io.SetPostSendHook([]() { tof_range_publisher.ClearOneShotResetPdos(); });
-    ecat_io.Start();
+
+    std::fprintf(stderr, "[R2] EtherCAT IO mode = %s\n",
+                 use_io_thread ? "ASYNC IO thread (default; set R2_ECAT_IO_THREAD=0 for sync)"
+                               : "SYNCHRONOUS in-loop (R2_ECAT_IO_THREAD=0)");
+
+    if (use_io_thread)
+        ecat_io.Start();
 
     auto next_wakeup = std::chrono::steady_clock::now();
     uint32_t tick = 0;
@@ -377,27 +514,49 @@ void Robot_Control_Loop(const char *ifname)
     {
         next_wakeup += std::chrono::milliseconds(kControlLoopPeriodMs);
 
-        // 进站：取走 IO 线程已捕获的原始帧并分发
+        // 进站：同步模式在本线程收一拍；异步模式由 IO 线程已收好。
+        if (!use_io_thread)
+            ecat_io.PollReceiveOnce();
         Consume_CAN_Rx();
 
-        // 计算：Robot 周期任务（电机 TX 经 linkx_send_can 入队，由 IO 线程刷出）
+        // 计算：Robot 周期任务（电机 TX 经 linkx_send_can 入队）
         Dispatch_Robot_Tick(tick);
+
+        // 出站：同步模式在本线程发一拍（与本次 tick 入队的 TX 确定性同步）。
+        if (!use_io_thread)
+            ecat_io.FlushSendOnce();
 
         // 旁路：诊断（不影响 1ms 节拍）
         Dispatch_Periodic_Diagnostics(tick);
+        Probe_Both_Slaves_Can(tick);
 
         ++tick;
 
-        // 控制线程按 1ms 节拍休眠让出 CPU；CAN 收发已由 IO 线程持续进行。
-        std::this_thread::sleep_until(next_wakeup);
+        if (use_io_thread)
+        {
+            // CAN 收发已由 IO 线程持续进行，控制线程按 1ms 节拍休眠让出 CPU。
+            std::this_thread::sleep_until(next_wakeup);
+        }
+        else
+        {
+            // 同步模式：忙轮询 EtherCAT 直到下一个 1ms，保持 CAN 收发高频
+            //（与原始 Poll_CAN_Until 一致，避免单槽 RX PDO 丢 ToF/反馈帧）。
+            while (std::chrono::steady_clock::now() < next_wakeup)
+            {
+                ecat_io.PollReceiveOnce();
+                Consume_CAN_Rx();
+                ecat_io.FlushSendOnce();
+            }
+        }
 
         Check_Period_Drift(tick, next_wakeup);
     }
 
-    // 退出钩子：强制失能（IO 线程仍在运行以刷出失能帧）→ 停 IO 线程 → 关 ROS 桥
+    // 退出钩子：强制失能 → （异步模式）停 IO 线程 → 关 ROS 桥
     Flush_Diagnostic_Streams();
-    Disable_All_Devices();
-    ecat_io.Stop();
+    Disable_All_Devices(use_io_thread);
+    if (use_io_thread)
+        ecat_io.Stop();
     Flush_Diagnostic_Streams();
     tof_range_publisher.Stop();
     tof_node.reset();
