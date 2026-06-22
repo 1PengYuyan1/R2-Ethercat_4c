@@ -6,7 +6,7 @@
 #include <cstdint>
 
 #define CHARIOT_LIFT_MODULE_NUM 2
-#define CHARIOT_LIFT_TOF_NUM 4
+#define CHARIOT_LIFT_TOF_NUM 6
 
 /* 新车头为原车尾：CAN0 对应车头抬升模块，CAN1 对应车尾抬升模块。 */
 enum Enum_Chariot_Lift_Module
@@ -33,6 +33,10 @@ enum Enum_Chariot_Lift_ToF_Sensor
     CHARIOT_LIFT_TOF_UP_BACK,
     CHARIOT_LIFT_TOF_DOWN_FRONT,
     CHARIOT_LIFT_TOF_DOWN_BACK,
+    // 整车正方形底盘车头面的两个 TFmini-S（slave1 / CAN1 / id 0x01、0x02），
+    // 用于下/上台阶后的偏航绝对纠正：左右距离差 -> 车身相对前方墙面的偏角。
+    CHARIOT_LIFT_TOF_CHASSIS_FRONT_LEFT,
+    CHARIOT_LIFT_TOF_CHASSIS_FRONT_RIGHT,
 };
 
 enum Enum_Chariot_Lift_Stair_State
@@ -52,6 +56,8 @@ enum Enum_Chariot_Lift_Stair_State
     CHARIOT_LIFT_STAIR_DOWN_RETRACT_ALL,
     CHARIOT_LIFT_STAIR_ABORT,
     CHARIOT_LIFT_STAIR_DOWN_ATTITUDE_CORRECT,
+    CHARIOT_LIFT_STAIR_UP_PRE_ATTITUDE_CORRECT,   // 上台阶前：先对正要爬的台阶立面
+    CHARIOT_LIFT_STAIR_UP_ATTITUDE_CORRECT,       // 上台阶后：再校一次（与下台阶对称）
 };
 
 struct ChariotLiftDriveParams
@@ -195,6 +201,9 @@ protected:
     bool Stair_Attitude_Target_Valid = false;
     float Stair_Attitude_Target_Yaw = 0.0f;
     uint32_t Stair_Attitude_Stable_Ticks = 0;
+    // 车头面左右 ToF 距离差的低通滤波状态（用于偏航绝对纠正补偿）
+    float Stair_Front_Diff_Filt_M = 0.0f;
+    bool Stair_Front_Diff_Valid = false;
 
     void Init_Motor_Params();
     void Parse_ToF_Byte(Enum_Chariot_Lift_ToF_Sensor sensor, uint8_t byte);
@@ -216,6 +225,9 @@ protected:
     void Capture_Stair_Attitude_Target();
     void Reset_Stair_Attitude_Correction();
     bool Is_Stair_Attitude_Corrected(uint32_t timeout_ticks);
+    // 由车头面左右 ToF 差分解出车身相对前方墙面的偏航偏角（rad）。
+    // 仅当两路 ToF 都在线/有效、距离落在合理墙距内、且左右差不超过共面阈值时返回 true。
+    bool Compute_Stair_Front_Yaw_Offset(float &yaw_offset);
     void Ensure_Motor_Enabled(Class_Motor_DM_Normal &motor, bool clear_disable_state);
     void Ensure_All_Motors_Enabled();
     void Reset_Lift_Profile(Enum_Chariot_Lift_Module module, float lift_rod_angle);

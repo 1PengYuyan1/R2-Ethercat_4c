@@ -13,10 +13,10 @@ constexpr float kLiftMotorToRodRatio = 3.0f;
 constexpr float kLiftRetractMotorAngle = -0.3f;
 constexpr float kLiftLegacyRaiseRodAngle = -8.0f;
 constexpr float kLiftLegacyDeepRaiseRodAngle = -14.5f;
-constexpr float kLiftFrontRaiseMotorAngle = -24.185f;
-constexpr float kLiftFrontDeepRaiseMotorAngle = -43.33f;
-constexpr float kLiftRearRaiseMotorAngle = -23.881f;
-constexpr float kLiftRearDeepRaiseMotorAngle = -43.38f;
+constexpr float kLiftFrontRaiseMotorAngle = -24.0f;
+constexpr float kLiftFrontDeepRaiseMotorAngle = -44.0f;
+constexpr float kLiftRearRaiseMotorAngle = -24.0f;
+constexpr float kLiftRearDeepRaiseMotorAngle = -44.0f;
 constexpr float kLiftRaiseCalibrationEpsilon = 1e-3f;
 constexpr float kLiftRetractRodAngle = kLiftRetractMotorAngle / kLiftMotorToRodRatio;
 constexpr float kLiftFrontRaiseRodAngle = kLiftFrontRaiseMotorAngle / kLiftMotorToRodRatio;
@@ -29,11 +29,12 @@ constexpr uint16_t kLiftToFTooFarCm = 65532U;
 constexpr uint16_t kStairToFNearCm = 10U;
 constexpr uint16_t kStairToFJumpCm = 5U;
 constexpr float kStairLiftReachedTolerance = 0.10f;
-constexpr float kStairLiftDriveForwardMps = 1.50f;
+constexpr float kStairLiftDriveForwardMps = 1.2f;
 constexpr float kStairChassisForwardMps = 1.2f;
+constexpr float kStairDownChassisForwardMps = 0.8f;
 constexpr uint32_t kStairLiftTimeoutTicks = 2500U;     // 5s at 2ms
 constexpr uint32_t kStairSensorTimeoutTicks = 5000U;   // 10s at 2ms
-constexpr uint32_t kStairExtraDriveTicks = 500U;       // 1s at 2ms
+constexpr uint32_t kStairExtraDriveTicks = 250U;       // 0.5s at 2ms
 constexpr uint32_t kStairDownAttitudeTimeoutTicks = 2500U;  // 5s at 2ms
 constexpr uint32_t kStairDownAttitudeStableTicks = 150U;     // 0.3s at 2ms
 constexpr float kStairDownAttitudeToleranceRad = 0.02f;
@@ -41,6 +42,21 @@ constexpr float kStairDownAttitudeKp = 3.6f;
 constexpr float kStairDownAttitudeMaxYawRadS = 0.90f;
 constexpr float kStairDownAttitudeMinYawRadS = 0.16f;
 constexpr float kStairDownAttitudeMinYawErrorRad = 0.06f;
+
+// ===== 车头面左右 ToF 差分姿态纠正（绝对基准来源）=====
+// IMU(HI13S2) 为 6-DoF 无磁，yaw 只是相对值、零点无意义且会漂。锁定的 IMU yaw 目标
+// 若起始就偏，会被忠实保持成偏。因此用车头面左右 ToF 距离差给出"相对前方墙面"的
+// 绝对偏角，在墙可见时持续刷新姿态目标；墙不可见时退回纯 IMU 短期保持。
+//
+// 标定/调参：
+//   baseline 仅缩放等效环路增益，无需精确（纠偏是把左右差压到 0 的闭环，近似即可收敛）。
+//   若上车发现纠偏方向越纠越偏，把 kStairFrontYawSign 取反即可。
+constexpr float kStairFrontToFBaselineM = 0.30f;   // front_left↔front_right 横向间距，m（按实车设置）
+constexpr float kStairFrontYawSign = 1.0f;         // 纠偏方向符号，台架上一次性确定（+1 / -1）
+constexpr float kStairFrontToFMinRangeM = 0.05f;   // 小于此距离视为无效（贴障/异常）
+constexpr float kStairFrontToFMaxRangeM = 2.50f;   // 大于此距离视为前方无墙
+constexpr float kStairFrontToFMaxDiffM = 0.40f;    // 左右差超过此值视为非共面（边沿/缺口）
+constexpr float kStairFrontDiffEmaAlpha = 0.30f;   // 左右差低通系数，抑制 ToF 噪声
 
 struct LiftHoldFeedforwardTable
 {
@@ -103,14 +119,30 @@ constexpr LiftHoldFeedforwardTable kLiftHoldFeedforward[CHARIOT_LIFT_MODULE_NUM]
     },
 };
 
+constexpr uint32_t kChassisToFSlaveId = 1U;  // 整车主控 slave1，承载底盘四面 8 路 TFmini-S
 constexpr LiftToFCanMap kLiftToFCanMap[CHARIOT_LIFT_TOF_NUM] = {
     {kLiftToFSlaveId, 3U, 0x02U, CHARIOT_LIFT_TOF_UP_FRONT},
     {kLiftToFSlaveId, 2U, 0x01U, CHARIOT_LIFT_TOF_UP_BACK},
     {kLiftToFSlaveId, 3U, 0x01U, CHARIOT_LIFT_TOF_DOWN_FRONT},
     {kLiftToFSlaveId, 2U, 0x02U, CHARIOT_LIFT_TOF_DOWN_BACK},
+    {kChassisToFSlaveId, 1U, 0x01U, CHARIOT_LIFT_TOF_CHASSIS_FRONT_LEFT},
+    {kChassisToFSlaveId, 1U, 0x02U, CHARIOT_LIFT_TOF_CHASSIS_FRONT_RIGHT},
 };
 
 constexpr StairStateConfig kStairStateConfigs[] = {
+    {
+        CHARIOT_LIFT_STAIR_UP_PRE_ATTITUDE_CORRECT,
+        "UP_PRE_ATTITUDE_CORRECT",
+        true, CHARIOT_LIFT_POSITION_RETRACT,
+        true, CHARIOT_LIFT_POSITION_RETRACT,
+        false, false, 0.0f, 0.0f,
+        STAIR_TRANSITION_ATTITUDE_CORRECTED,
+        CHARIOT_LIFT_TOF_DOWN_BACK,
+        CHARIOT_LIFT_STAIR_UP_RAISE_ALL,
+        kStairDownAttitudeTimeoutTicks,
+        false,
+        false,
+    },
     {
         CHARIOT_LIFT_STAIR_UP_RAISE_ALL,
         "UP_RAISE_ALL",
@@ -157,7 +189,7 @@ constexpr StairStateConfig kStairStateConfigs[] = {
         true, CHARIOT_LIFT_POSITION_RAISE,
         false, true, kStairLiftDriveForwardMps, kStairChassisForwardMps,
         STAIR_TRANSITION_TOF_NEAR_OR_JUMP,
-        CHARIOT_LIFT_TOF_DOWN_FRONT,
+        CHARIOT_LIFT_TOF_UP_BACK,
         CHARIOT_LIFT_STAIR_UP_RETRACT_REAR,
         kStairSensorTimeoutTicks,
         true,
@@ -170,7 +202,7 @@ constexpr StairStateConfig kStairStateConfigs[] = {
         true, CHARIOT_LIFT_POSITION_RETRACT,
         false, false, 0.0f, 0.0f,
         STAIR_TRANSITION_REAR_RETRACTED,
-        CHARIOT_LIFT_TOF_DOWN_FRONT,
+        CHARIOT_LIFT_TOF_UP_BACK,
         CHARIOT_LIFT_STAIR_UP_CHASSIS_WAIT_DOWN_BACK,
         kStairLiftTimeoutTicks,
         false,
@@ -184,19 +216,19 @@ constexpr StairStateConfig kStairStateConfigs[] = {
         false, false, 0.0f, kStairChassisForwardMps,
         STAIR_TRANSITION_TOF_NEAR_OR_JUMP,
         CHARIOT_LIFT_TOF_DOWN_BACK,
-        CHARIOT_LIFT_STAIR_IDLE,
+        CHARIOT_LIFT_STAIR_UP_ATTITUDE_CORRECT,
         kStairSensorTimeoutTicks,
         true,
-        true,
+        false,
     },
     {
         CHARIOT_LIFT_STAIR_DOWN_CHASSIS_WAIT_UP_BACK,
         "DOWN_CHASSIS_WAIT_UP_BACK",
         true, CHARIOT_LIFT_POSITION_RETRACT,
         true, CHARIOT_LIFT_POSITION_RETRACT,
-        false, false, 0.0f, kStairChassisForwardMps,
+        false, false, 0.0f, kStairDownChassisForwardMps,
         STAIR_TRANSITION_TOF_JUMP,
-        CHARIOT_LIFT_TOF_UP_BACK,
+        CHARIOT_LIFT_TOF_DOWN_FRONT,
         CHARIOT_LIFT_STAIR_DOWN_RAISE_FRONT,
         kStairSensorTimeoutTicks,
         true,
@@ -209,7 +241,7 @@ constexpr StairStateConfig kStairStateConfigs[] = {
         true, CHARIOT_LIFT_POSITION_RETRACT,
         false, false, 0.0f, 0.0f,
         STAIR_TRANSITION_FRONT_RAISED,
-        CHARIOT_LIFT_TOF_UP_BACK,
+        CHARIOT_LIFT_TOF_DOWN_FRONT,
         CHARIOT_LIFT_STAIR_DOWN_FRONT_DRIVE_WAIT_DOWN_BACK,
         kStairLiftTimeoutTicks,
         false,
@@ -220,7 +252,7 @@ constexpr StairStateConfig kStairStateConfigs[] = {
         "DOWN_FRONT_DRIVE_WAIT_DOWN_BACK",
         true, CHARIOT_LIFT_POSITION_RAISE,
         true, CHARIOT_LIFT_POSITION_RETRACT,
-        true, false, kStairLiftDriveForwardMps, kStairChassisForwardMps,
+        true, false, kStairLiftDriveForwardMps, kStairDownChassisForwardMps,
         STAIR_TRANSITION_TOF_JUMP,
         CHARIOT_LIFT_TOF_DOWN_BACK,
         CHARIOT_LIFT_STAIR_DOWN_RAISE_REAR,
@@ -270,6 +302,19 @@ constexpr StairStateConfig kStairStateConfigs[] = {
     {
         CHARIOT_LIFT_STAIR_DOWN_ATTITUDE_CORRECT,
         "DOWN_ATTITUDE_CORRECT",
+        true, CHARIOT_LIFT_POSITION_RETRACT,
+        true, CHARIOT_LIFT_POSITION_RETRACT,
+        false, false, 0.0f, 0.0f,
+        STAIR_TRANSITION_ATTITUDE_CORRECTED,
+        CHARIOT_LIFT_TOF_DOWN_BACK,
+        CHARIOT_LIFT_STAIR_IDLE,
+        kStairDownAttitudeTimeoutTicks,
+        false,
+        true,
+    },
+    {
+        CHARIOT_LIFT_STAIR_UP_ATTITUDE_CORRECT,
+        "UP_ATTITUDE_CORRECT",
         true, CHARIOT_LIFT_POSITION_RETRACT,
         true, CHARIOT_LIFT_POSITION_RETRACT,
         false, false, 0.0f, 0.0f,
@@ -779,8 +824,8 @@ void Class_Chariot_Lift::Start_Stair_Up(float raise_angle)
 {
     Set_Control_Type(CHARIOT_LIFT_CONTROL_ENABLE);
     Set_Raise_Angle(raise_angle);
-    Reset_Stair_Attitude_Correction();
-    Enter_Stair_State(CHARIOT_LIFT_STAIR_UP_RAISE_ALL);
+    Capture_Stair_Attitude_Target();
+    Enter_Stair_State(CHARIOT_LIFT_STAIR_UP_PRE_ATTITUDE_CORRECT);
 }
 
 void Class_Chariot_Lift::Start_Stair_Down(float raise_angle)
@@ -974,8 +1019,14 @@ void Class_Chariot_Lift::Enter_Stair_State(Enum_Chariot_Lift_Stair_State state)
     const StairStateConfig *config = Find_Stair_State_Config(state);
     if (config != nullptr && config->capture_sensor_reference)
         Capture_Stair_ToF_Reference(config->sensor);
-    if (state == CHARIOT_LIFT_STAIR_DOWN_ATTITUDE_CORRECT)
+    if (state == CHARIOT_LIFT_STAIR_DOWN_ATTITUDE_CORRECT ||
+        state == CHARIOT_LIFT_STAIR_UP_PRE_ATTITUDE_CORRECT ||
+        state == CHARIOT_LIFT_STAIR_UP_ATTITUDE_CORRECT)
         Stair_Attitude_Stable_Ticks = 0;
+    /* 前置纠正完成、即将开始爬升时，把"已对正台阶"的当前航向重新锁为目标，
+     * 作为爬升后 POST 纠正在看不到墙时的保持基准（否则会退回未对正的起始航向）。 */
+    if (state == CHARIOT_LIFT_STAIR_UP_RAISE_ALL)
+        Capture_Stair_Attitude_Target();
     if (state == CHARIOT_LIFT_STAIR_ABORT)
         Set_Stair_Drive_Command(false, false, 0.0f);
 }
@@ -1115,6 +1166,8 @@ void Class_Chariot_Lift::Capture_Stair_Attitude_Target()
     Stair_Attitude_Target_Valid = Stair_Attitude_Yaw_Valid;
     if (Stair_Attitude_Target_Valid)
         Stair_Attitude_Target_Yaw = Stair_Attitude_Yaw;
+    Stair_Front_Diff_Valid = false;
+    Stair_Front_Diff_Filt_M = 0.0f;
 }
 
 void Class_Chariot_Lift::Reset_Stair_Attitude_Correction()
@@ -1123,6 +1176,55 @@ void Class_Chariot_Lift::Reset_Stair_Attitude_Correction()
     Stair_Attitude_Target_Yaw = 0.0f;
     Stair_Attitude_Stable_Ticks = 0;
     Stair_Chassis_Omega = 0.0f;
+    Stair_Front_Diff_Valid = false;
+    Stair_Front_Diff_Filt_M = 0.0f;
+}
+
+bool Class_Chariot_Lift::Compute_Stair_Front_Yaw_Offset(float &yaw_offset)
+{
+    const ChariotLiftToFData &left = ToF_Data[CHARIOT_LIFT_TOF_CHASSIS_FRONT_LEFT];
+    const ChariotLiftToFData &right = ToF_Data[CHARIOT_LIFT_TOF_CHASSIS_FRONT_RIGHT];
+
+    /* 两路必须都在线且信号有效，否则视为前方无可用参考面 */
+    if (!left.online || !right.online || !left.valid || !right.valid)
+    {
+        Stair_Front_Diff_Valid = false;
+        return false;
+    }
+
+    const float dl = left.range_m;
+    const float dr = right.range_m;
+    if (!std::isfinite(dl) || !std::isfinite(dr) ||
+        dl < kStairFrontToFMinRangeM || dl > kStairFrontToFMaxRangeM ||
+        dr < kStairFrontToFMinRangeM || dr > kStairFrontToFMaxRangeM)
+    {
+        Stair_Front_Diff_Valid = false;
+        return false;
+    }
+
+    const float diff = dr - dl;
+    /* 左右差过大 -> 两束没打在同一平面（边沿/缺口），不可用 */
+    if (fabsf(diff) > kStairFrontToFMaxDiffM)
+    {
+        Stair_Front_Diff_Valid = false;
+        return false;
+    }
+
+    /* 低通滤波抑制 ToF 噪声；首次有效直接载入，避免从 0 缓慢爬升 */
+    if (!Stair_Front_Diff_Valid)
+    {
+        Stair_Front_Diff_Filt_M = diff;
+        Stair_Front_Diff_Valid = true;
+    }
+    else
+    {
+        Stair_Front_Diff_Filt_M +=
+            kStairFrontDiffEmaAlpha * (diff - Stair_Front_Diff_Filt_M);
+    }
+
+    yaw_offset =
+        kStairFrontYawSign * atan2f(Stair_Front_Diff_Filt_M, kStairFrontToFBaselineM);
+    return true;
 }
 
 bool Class_Chariot_Lift::Is_Stair_Attitude_Corrected(uint32_t timeout_ticks)
@@ -1138,6 +1240,20 @@ bool Class_Chariot_Lift::Is_Stair_Attitude_Corrected(uint32_t timeout_ticks)
     {
         Stair_Chassis_Omega = 0.0f;
         return true;
+    }
+
+    /* 车头面看得到墙时，用左右 ToF 差分把目标航向刷新成"车身平行于墙"对应的绝对值，
+     * 覆盖起始锁定的 IMU 瞬时值（可能本身就偏）。看不到墙则保持上一目标，退回纯 IMU 保持。
+     * 需要当前 IMU yaw 有效作为换算基准（无磁 6-DoF 下 IMU 仍是唯一的快速跟踪源）。 */
+    if (Stair_Attitude_Yaw_Valid)
+    {
+        float front_yaw_offset = 0.0f;
+        if (Compute_Stair_Front_Yaw_Offset(front_yaw_offset))
+        {
+            Stair_Attitude_Target_Yaw = Math_Modulus_Normalization(
+                Stair_Attitude_Yaw - front_yaw_offset, 2.0f * PI);
+            Stair_Attitude_Target_Valid = true;
+        }
     }
 
     if (!Stair_Attitude_Target_Valid || !Stair_Attitude_Yaw_Valid)

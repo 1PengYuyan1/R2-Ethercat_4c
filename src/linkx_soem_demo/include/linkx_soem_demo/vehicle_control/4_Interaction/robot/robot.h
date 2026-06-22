@@ -24,6 +24,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist.hpp>
+#include <nav_msgs/msg/odometry.hpp>
 #include <std_srvs/srv/trigger.hpp>
 #include <std_msgs/msg/u_int16.hpp>
 
@@ -110,6 +111,7 @@ protected:
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr             sub_remote_cmd_;
     rclcpp::Subscription<std_msgs::msg::UInt16>::SharedPtr                 sub_buttons_;
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr                pub_odom_;
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr                  pub_odometry_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr                     srv_vehicle_enable_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr                     srv_vehicle_disable_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr                     srv_stair_up_raise_8_0_;
@@ -130,6 +132,23 @@ protected:
     Class_Chariot_Imu_Heading_Hold                                         imu_heading_hold_;
 
     int         odom_pub_divider_     = 0;
+
+    // /odom 位姿积分状态：x/y 纯轮速积分，yaw 为轮速里程 + IMU 角速度互补融合。
+    // 仅负责短期里程，长期零漂由 planner 侧 LaserOdomFusion 用激光绝对修正。
+    struct Odom_State {
+        double  x           = 0.0;   // 世界坐标系积分位姿 (m)
+        double  y           = 0.0;
+        double  yaw_fused   = 0.0;   // 互补融合后的航向 (rad, 归一化到 [-pi,pi])
+        double  wheel_yaw   = 0.0;   // 纯轮速积分航向，作为融合基准
+        int64_t last_ns     = 0;
+        bool    initialized = false; // 首帧只记录时间基准，跳过积分
+    };
+    Odom_State  odom_state_;
+
+    // 互补滤波参数（硬编码成员，改了需重编译；现场免编译调参可仿 imu_heading_hold 改 declare_parameter）
+    float Odom_Speed_Threshold_MPS = 0.3f;   // 高速段判定阈值 (m/s)，超过用 fast alpha
+    float Odom_Yaw_Alpha_Slow      = 0.03f;  // 低速段融合系数：小 = 抗打滑但响应慢
+    float Odom_Yaw_Alpha_Fast      = 0.18f;  // 高速段融合系数：大 = 响应快但抗打滑弱
 
     float AHRS_Chassis_Omega_Feedforward = 0.07f;
 
@@ -155,10 +174,7 @@ protected:
     float auxiliary_motor_profile_direction_ = 1.0f;
     float auxiliary_motor_target_omega_ = 0.0f;
     float auxiliary_motor_hold_blend_ = 0.0f;
-    float auxiliary_motor_hold_angle_ = 0.0f;
     uint32_t auxiliary_motor_hold_ready_ticks_ = 0U;
-    uint32_t auxiliary_motor_home_damping_ticks_ = 0U;
-    uint32_t auxiliary_motor_impact_damping_ticks_ = 0U;
     bool auxiliary_motor_command_enable_ = false;
     bool auxiliary_motor_profile_active_ = false;
     bool auxiliary_motor_profile_initialized_ = false;
@@ -171,6 +187,7 @@ protected:
     void _Lift_Control();
     void _Gripper_Control(bool buttons_recent, uint16_t button_code);
     void _Send_Odometry();
+    void _Integrate_Odometry();
     void _ROS2_Spin_Loop();
     void _Register_Action_Services();
     bool _Enqueue_High_Priority_Action(HighPriorityAction action, const char *name);

@@ -33,51 +33,51 @@ constexpr const char *kRosCmdTopic = "/chassis/cmd_vel";
 constexpr const char *kRemoteCmdTopic = "/chassis/remote_cmd_vel";
 constexpr float kManualBothLiftMotorRaiseAngle = -39.0f;
 constexpr float kManualBothLiftRetractAngle = -0.01f;
-constexpr float kAuxiliaryMotorRaisedAngle = 1.6f;
+constexpr float kAuxiliaryMotorRaisedAngle = 1.5f;
 constexpr float kAuxiliaryMotorHomeAngle = -0.05f;
 constexpr float kAuxiliaryMotorReachedTolerance = 0.05f;
 constexpr float kAuxiliaryMotorHomeReachedTolerance = 0.12f;
 constexpr float kAuxiliaryMotorControlDtS = 0.002f;
+
+// ---- 运动段：梯形速度规划（accel → cruise → decel），抬升/回零各一套限幅 ----
 constexpr float kAuxiliaryMotorProfileMaxSpeed = 5.8f;
-constexpr float kAuxiliaryMotorHomeProfileMaxSpeed = 1.6f;
+constexpr float kAuxiliaryMotorHomeProfileMaxSpeed = 4.0f;
 constexpr float kAuxiliaryMotorProfileMaxAccel = 22.0f;
-constexpr float kAuxiliaryMotorHomeProfileMaxAccel = 8.0f;
+constexpr float kAuxiliaryMotorHomeProfileMaxAccel = 18.0f;
 constexpr float kAuxiliaryMotorProfileMaxDecel = 28.0f;
-constexpr float kAuxiliaryMotorHomeProfileMaxDecel = 12.0f;
-constexpr float kAuxiliaryMotorHomeProfileSnapDistance = 0.03f;
+constexpr float kAuxiliaryMotorHomeProfileMaxDecel = 28.0f;
+constexpr float kAuxiliaryMotorHomeProfileSnapDistance = 0.06f;
+
+// ---- 运动段 MIT 增益：跟随规划轨迹，偏软以保证平滑、不抖 ----
 constexpr float kAuxiliaryMotorMoveTorqueNm = 0.0f;
 constexpr float kAuxiliaryMotorMoveKp = 12.0f;
 constexpr float kAuxiliaryMotorMoveKd = 2.0f;
-constexpr float kAuxiliaryMotorHomeMoveKp = 4.0f;
-constexpr float kAuxiliaryMotorHomeMoveKd = 5.0f;
+constexpr float kAuxiliaryMotorHomeMoveKp = 14.0f;
+constexpr float kAuxiliaryMotorHomeMoveKd = 2.0f;
+
+// ---- 保持段：刚性 + 近临界阻尼 PD ----
+// kp 提供随偏差线性增大的恢复力矩（即“到位后的大扭矩”，最终被电机 7.8 N·m 上限钳位），
+// kd 抑制振荡，deadband 只在编码器量化噪声范围内关掉恢复力矩以免极限环抖动。
+// 抗冲击不再用“松手 + 纯阻尼(kp=0)”——那样没有平衡点，一碰就漂/震荡；
+// 改为始终用这套刚性 PD 主动把电机顶回目标角，碰撞/震动被自然抑制。
+// home(0.0) 处刚度从原来的 0 提升到与抬升位一致，解决“0.0 无保持力矩”的问题。
+// 调参：若仍有振荡，先增大 kd（上限 5.0），再适当下调 kp；kp 越大“到位扭矩”越硬。
 constexpr float kAuxiliaryMotorHoldTorqueNm = 0.0f;
-constexpr float kAuxiliaryMotorHoldKp = 100.0f;
-constexpr float kAuxiliaryMotorHoldKd = 4.0f;
-constexpr float kAuxiliaryMotorHoldDeadband = 0.010f;
-constexpr float kAuxiliaryMotorHoldNearRange = 0.040f;
-constexpr float kAuxiliaryMotorHoldNearScale = 0.25f;
-constexpr float kAuxiliaryMotorHomeHoldKp = 0.0f;
-constexpr float kAuxiliaryMotorHomeHoldKd = 5.0f;
-constexpr float kAuxiliaryMotorHomeHoldDeadband = 0.010f;
-constexpr float kAuxiliaryMotorHomeHoldNearRange = 0.035f;
-constexpr float kAuxiliaryMotorHomeHoldNearScale = 0.15f;
-constexpr float kAuxiliaryMotorHomeApproachNearRange = 0.18f;
-constexpr float kAuxiliaryMotorHomeApproachNearScale = 0.0f;
-constexpr float kAuxiliaryMotorHomeOscillationOmega = 0.70f;
-constexpr uint32_t kAuxiliaryMotorHomeDampingTicks = 180U;
-constexpr float kAuxiliaryMotorHomeDampingKp = 0.0f;
-constexpr float kAuxiliaryMotorHomeDampingKd = 5.0f;
-constexpr float kAuxiliaryMotorImpactOmega = 0.28f;
-constexpr uint32_t kAuxiliaryMotorImpactDampingTicks = 260U;
-constexpr float kAuxiliaryMotorImpactDampingKp = 0.0f;
-constexpr float kAuxiliaryMotorImpactDampingKd = 5.0f;
+constexpr float kAuxiliaryMotorHoldKp = 20.0f;
+constexpr float kAuxiliaryMotorHoldKd = 2.0f;
+constexpr float kAuxiliaryMotorHoldDeadband = 0.015f;
+constexpr float kAuxiliaryMotorHomeHoldKp = 20.0f;
+constexpr float kAuxiliaryMotorHomeHoldKd = 2.0f;
+constexpr float kAuxiliaryMotorHomeHoldDeadband = 0.015f;
+
+// ---- 进入/退出保持的判据 ----
 constexpr float kAuxiliaryMotorHoldEnterTolerance = 0.04f;
 constexpr float kAuxiliaryMotorHomeHoldEnterTolerance = 0.12f;
 constexpr float kAuxiliaryMotorHoldEnterOmega = 0.25f;
 constexpr uint32_t kAuxiliaryMotorHoldEnterStableTicks = 25U;
 constexpr float kAuxiliaryMotorHoldExitTolerance = 0.20f;
 constexpr float kAuxiliaryMotorHoldGainRampTimeS = 0.25f;
-constexpr float kAuxiliaryMotorHomeHoldGainRampTimeS = 0.15f;
+constexpr float kAuxiliaryMotorHomeHoldGainRampTimeS = 0.20f;
 constexpr uint8_t kAuxiliaryMotorCanChannel = 0U;
 constexpr uint8_t kAuxiliaryMotorRxId = 0x17U;
 constexpr uint8_t kAuxiliaryMotorTxId = 0x07U;
@@ -145,6 +145,7 @@ void Class_Robot::TIM_1ms_Calculate_Callback()
     suppress_remote_buttons_this_tick_ = _Process_High_Priority_Actions();
     _Chassis_Control();
     _Lift_Control();
+    _Integrate_Odometry();
     _Send_Odometry();
     suppress_remote_buttons_this_tick_ = false;
 }
@@ -192,6 +193,8 @@ void Class_Robot::Start_ROS2_Bridge()
     imu_heading_hold_.Start(bridge_node_);
 
     pub_odom_ = bridge_node_->create_publisher<geometry_msgs::msg::Twist>("/chassis/odom_twist", 50);
+    pub_odometry_ = bridge_node_->create_publisher<nav_msgs::msg::Odometry>("/odom", 50);
+    odom_state_ = Odom_State{};
     _Register_Action_Services();
 
     ros_bridge_running_.store(true);
@@ -214,6 +217,7 @@ void Class_Robot::Stop_ROS2_Bridge()
     srv_stair_up_raise_8_0_.reset();
     srv_vehicle_disable_.reset();
     srv_vehicle_enable_.reset();
+    pub_odometry_.reset();
     pub_odom_.reset();
     imu_heading_hold_.Stop();
     sub_buttons_.reset();
@@ -707,8 +711,6 @@ void Class_Robot::_Enable_Auxiliary_Motor()
     auxiliary_motor_hold_active_ = false;
     auxiliary_motor_hold_blend_ = 0.0f;
     auxiliary_motor_hold_ready_ticks_ = 0U;
-    auxiliary_motor_home_damping_ticks_ = 0U;
-    auxiliary_motor_impact_damping_ticks_ = 0U;
     Auxiliary_Motor.CAN_Send_Enter();
 }
 
@@ -720,8 +722,6 @@ void Class_Robot::_Disable_Auxiliary_Motor()
     auxiliary_motor_hold_active_ = false;
     auxiliary_motor_hold_blend_ = 0.0f;
     auxiliary_motor_hold_ready_ticks_ = 0U;
-    auxiliary_motor_home_damping_ticks_ = 0U;
-    auxiliary_motor_impact_damping_ticks_ = 0U;
     Auxiliary_Motor.Set_Control_Status(Motor_DM_Status_DISABLE);
     Auxiliary_Motor.Set_Control_Maintain_Postion(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
     Auxiliary_Motor.CAN_Send_Exit();
@@ -816,10 +816,7 @@ void Class_Robot::_Reset_Auxiliary_Motor_Profile(float angle)
     auxiliary_motor_profile_initialized_ = true;
     auxiliary_motor_hold_active_ = false;
     auxiliary_motor_hold_blend_ = 0.0f;
-    auxiliary_motor_hold_angle_ = angle;
     auxiliary_motor_hold_ready_ticks_ = 0U;
-    auxiliary_motor_home_damping_ticks_ = 0U;
-    auxiliary_motor_impact_damping_ticks_ = 0U;
 }
 
 void Class_Robot::_Start_Auxiliary_Motor_Profile(float target_angle)
@@ -883,10 +880,7 @@ void Class_Robot::_Start_Auxiliary_Motor_Profile(float target_angle)
     auxiliary_motor_profile_active_ = auxiliary_motor_profile_duration_ > 1e-4f;
     auxiliary_motor_hold_active_ = false;
     auxiliary_motor_hold_blend_ = 0.0f;
-    auxiliary_motor_hold_angle_ = start_angle;
     auxiliary_motor_hold_ready_ticks_ = 0U;
-    auxiliary_motor_home_damping_ticks_ = 0U;
-    auxiliary_motor_impact_damping_ticks_ = 0U;
 
     if (!auxiliary_motor_profile_active_)
         _Reset_Auxiliary_Motor_Profile(target_angle);
@@ -993,208 +987,108 @@ void Class_Robot::_Output_Auxiliary_Motor()
         auxiliary_motor_hold_active_ = false;
         auxiliary_motor_hold_blend_ = 0.0f;
         auxiliary_motor_hold_ready_ticks_ = 0U;
-        auxiliary_motor_home_damping_ticks_ = 0U;
-        auxiliary_motor_impact_damping_ticks_ = 0U;
         Auxiliary_Motor.CAN_Send_Enter();
+        Auxiliary_Motor.TIM_Send_PeriodElapsedCallback();
+        return;
     }
-    else
+
+    // 1) 运动段：梯形速度规划生成平滑目标角 + 前馈角速度
+    const float target_omega =
+        _Update_Auxiliary_Motor_Profile(auxiliary_motor_target_angle_);
+    const bool home_target = Auxiliary_Is_Home_Target(auxiliary_motor_target_angle_);
+    const float now_angle = Auxiliary_Motor.Get_Now_Radian();
+    const float feedback_error = std::fabs(now_angle - auxiliary_motor_target_angle_);
+    const float feedback_omega = std::fabs(Auxiliary_Motor.Get_Now_Omega());
+
+    // 2) 保持段状态机：规划到位且稳定 → 进入保持；被外力推出退出阈值 → 退回规划平滑滑回。
+    //    不再有 impact / home / settling 等“松手纯阻尼”分支——抗冲击交给保持段的刚性 PD。
+    const float hold_enter_tolerance = home_target ?
+        kAuxiliaryMotorHomeHoldEnterTolerance :
+        kAuxiliaryMotorHoldEnterTolerance;
+
+    if (auxiliary_motor_hold_active_ &&
+        feedback_error > kAuxiliaryMotorHoldExitTolerance)
     {
-        const float target_omega =
-            _Update_Auxiliary_Motor_Profile(auxiliary_motor_target_angle_);
-        const bool home_target = Auxiliary_Is_Home_Target(auxiliary_motor_target_angle_);
-        const float feedback_error =
-            std::fabs(Auxiliary_Motor.Get_Now_Radian() - auxiliary_motor_target_angle_);
-        const float feedback_omega = std::fabs(Auxiliary_Motor.Get_Now_Omega());
-        const float hold_enter_tolerance = home_target ?
-            kAuxiliaryMotorHomeHoldEnterTolerance :
-            kAuxiliaryMotorHoldEnterTolerance;
+        auxiliary_motor_hold_active_ = false;
+        auxiliary_motor_hold_blend_ = 0.0f;
+        auxiliary_motor_hold_ready_ticks_ = 0U;
+    }
 
-        if (auxiliary_motor_hold_active_ &&
-            feedback_error > kAuxiliaryMotorHoldExitTolerance)
+    if (!auxiliary_motor_hold_active_)
+    {
+        if (_Is_Auxiliary_Motor_Profile_At_Target() &&
+            feedback_error <= hold_enter_tolerance &&
+            feedback_omega <= kAuxiliaryMotorHoldEnterOmega)
         {
-            auxiliary_motor_hold_blend_ = 0.0f;
-            auxiliary_motor_hold_ready_ticks_ = 0U;
-            auxiliary_motor_home_damping_ticks_ = 0U;
-            auxiliary_motor_impact_damping_ticks_ = 0U;
-            auxiliary_motor_hold_active_ = false;
-        }
-
-        if (!auxiliary_motor_hold_active_)
-        {
-            if (_Is_Auxiliary_Motor_Profile_At_Target() &&
-                feedback_error <= hold_enter_tolerance &&
-                feedback_omega <= kAuxiliaryMotorHoldEnterOmega)
-            {
-                if (auxiliary_motor_hold_ready_ticks_ < kAuxiliaryMotorHoldEnterStableTicks)
-                    ++auxiliary_motor_hold_ready_ticks_;
-            }
-            else
-            {
-                auxiliary_motor_hold_ready_ticks_ = 0U;
-            }
-
-            if (auxiliary_motor_hold_ready_ticks_ >= kAuxiliaryMotorHoldEnterStableTicks)
-            {
-                auxiliary_motor_hold_active_ = true;
-                auxiliary_motor_hold_blend_ = 0.0f;
-                auxiliary_motor_hold_angle_ = Auxiliary_Motor.Get_Now_Radian();
-                auxiliary_motor_home_damping_ticks_ = 0U;
-                auxiliary_motor_impact_damping_ticks_ = 0U;
-            }
-        }
-
-        const bool home_profile_settling =
-            home_target &&
-            feedback_error <= kAuxiliaryMotorHomeApproachNearRange;
-
-        if ((auxiliary_motor_hold_active_ || home_profile_settling) &&
-            feedback_omega >= kAuxiliaryMotorImpactOmega)
-        {
-            auxiliary_motor_impact_damping_ticks_ = kAuxiliaryMotorImpactDampingTicks;
-            auxiliary_motor_home_damping_ticks_ = 0U;
-            auxiliary_motor_hold_blend_ = 0.0f;
-        }
-
-        if (home_target &&
-            auxiliary_motor_hold_active_ &&
-            feedback_omega >= kAuxiliaryMotorHomeOscillationOmega)
-        {
-            auxiliary_motor_home_damping_ticks_ = kAuxiliaryMotorHomeDampingTicks;
-            auxiliary_motor_hold_blend_ = 0.0f;
-        }
-
-        bool home_damping_mode = false;
-        if (home_target && auxiliary_motor_home_damping_ticks_ > 0U)
-        {
-            home_damping_mode = true;
-            --auxiliary_motor_home_damping_ticks_;
-        }
-        bool impact_damping_mode = false;
-        if (auxiliary_motor_impact_damping_ticks_ > 0U)
-        {
-            impact_damping_mode = true;
-            --auxiliary_motor_impact_damping_ticks_;
-        }
-
-        if (auxiliary_motor_hold_active_)
-        {
-            const float hold_gain_ramp_time = home_target ?
-                kAuxiliaryMotorHomeHoldGainRampTimeS :
-                kAuxiliaryMotorHoldGainRampTimeS;
-            if (home_damping_mode || impact_damping_mode)
-            {
-                auxiliary_motor_hold_blend_ = 0.0f;
-            }
-            else
-            {
-                const float blend_step = (hold_gain_ramp_time > 1e-4f) ?
-                    (kAuxiliaryMotorControlDtS / hold_gain_ramp_time) :
-                    1.0f;
-                auxiliary_motor_hold_blend_ += blend_step;
-                if (auxiliary_motor_hold_blend_ > 1.0f)
-                    auxiliary_motor_hold_blend_ = 1.0f;
-            }
+            if (auxiliary_motor_hold_ready_ticks_ < kAuxiliaryMotorHoldEnterStableTicks)
+                ++auxiliary_motor_hold_ready_ticks_;
         }
         else
         {
+            auxiliary_motor_hold_ready_ticks_ = 0U;
+        }
+
+        if (auxiliary_motor_hold_ready_ticks_ >= kAuxiliaryMotorHoldEnterStableTicks)
+        {
+            auxiliary_motor_hold_active_ = true;
             auxiliary_motor_hold_blend_ = 0.0f;
         }
-
-        const float blend = auxiliary_motor_hold_blend_;
-        const float move_kp = home_target ? kAuxiliaryMotorHomeMoveKp : kAuxiliaryMotorMoveKp;
-        const float move_kd = home_target ? kAuxiliaryMotorHomeMoveKd : kAuxiliaryMotorMoveKd;
-        const float hold_kp = home_target ? kAuxiliaryMotorHomeHoldKp : kAuxiliaryMotorHoldKp;
-        const float hold_kd = home_target ? kAuxiliaryMotorHomeHoldKd : kAuxiliaryMotorHoldKd;
-        float control_torque =
-            kAuxiliaryMotorMoveTorqueNm +
-            blend * (kAuxiliaryMotorHoldTorqueNm - kAuxiliaryMotorMoveTorqueNm);
-        float control_kp =
-            move_kp + blend * (hold_kp - move_kp);
-        float control_kd =
-            move_kd + blend * (hold_kd - move_kd);
-        float control_angle = auxiliary_motor_smooth_angle_;
-        float control_omega = target_omega;
-        if (home_target && (auxiliary_motor_hold_active_ || home_profile_settling))
-        {
-            const float now_angle = Auxiliary_Motor.Get_Now_Radian();
-            const float target_error = auxiliary_motor_target_angle_ - now_angle;
-            const float abs_target_error = std::fabs(target_error);
-            control_omega = 0.0f;
-
-            if (home_profile_settling && !auxiliary_motor_hold_active_)
-            {
-                control_angle = now_angle;
-                control_torque = 0.0f;
-                control_kp = kAuxiliaryMotorHomeDampingKp;
-                control_kd = kAuxiliaryMotorHomeDampingKd;
-            }
-            else if (home_damping_mode)
-            {
-                control_angle = now_angle +
-                                target_error * kAuxiliaryMotorHomeHoldNearScale;
-                control_torque = 0.0f;
-                control_kp = kAuxiliaryMotorHomeDampingKp;
-                control_kd = kAuxiliaryMotorHomeDampingKd;
-            }
-            else if (abs_target_error <= kAuxiliaryMotorHomeHoldDeadband)
-            {
-                control_angle = now_angle;
-            }
-            else if (abs_target_error <= kAuxiliaryMotorHomeHoldNearRange)
-            {
-                control_angle = now_angle +
-                                target_error * kAuxiliaryMotorHomeHoldNearScale;
-            }
-            else if (!auxiliary_motor_hold_active_ &&
-                     abs_target_error <= kAuxiliaryMotorHomeApproachNearRange)
-            {
-                control_angle = now_angle +
-                                target_error * kAuxiliaryMotorHomeApproachNearScale;
-            }
-            else
-            {
-                control_angle = auxiliary_motor_target_angle_;
-            }
-        }
-        else if (auxiliary_motor_hold_active_)
-        {
-            const float now_angle = Auxiliary_Motor.Get_Now_Radian();
-            const float target_error = auxiliary_motor_target_angle_ - now_angle;
-            const float abs_target_error = std::fabs(target_error);
-            control_omega = 0.0f;
-
-            if (abs_target_error <= kAuxiliaryMotorHoldDeadband)
-            {
-                control_angle = now_angle;
-            }
-            else if (abs_target_error <= kAuxiliaryMotorHoldNearRange)
-            {
-                control_angle = now_angle +
-                                target_error * kAuxiliaryMotorHoldNearScale;
-            }
-            else
-            {
-                control_angle = auxiliary_motor_target_angle_;
-            }
-        }
-
-        if (impact_damping_mode)
-        {
-            control_angle = Auxiliary_Motor.Get_Now_Radian();
-            control_omega = 0.0f;
-            control_torque = 0.0f;
-            control_kp = kAuxiliaryMotorImpactDampingKp;
-            control_kd = kAuxiliaryMotorImpactDampingKd;
-        }
-
-        Auxiliary_Motor.Set_Control_Maintain_Postion(
-            control_angle,
-            control_omega,
-            control_torque,
-            control_kp,
-            control_kd);
     }
 
+    // 3) 增益选择
+    const float move_kp = home_target ? kAuxiliaryMotorHomeMoveKp : kAuxiliaryMotorMoveKp;
+    const float move_kd = home_target ? kAuxiliaryMotorHomeMoveKd : kAuxiliaryMotorMoveKd;
+
+    float control_angle;
+    float control_omega;
+    float control_torque;
+    float control_kp;
+    float control_kd;
+
+    if (auxiliary_motor_hold_active_)
+    {
+        // move → hold 增益渐变，避免切入瞬间的力矩台阶
+        const float hold_kp = home_target ? kAuxiliaryMotorHomeHoldKp : kAuxiliaryMotorHoldKp;
+        const float hold_kd = home_target ? kAuxiliaryMotorHomeHoldKd : kAuxiliaryMotorHoldKd;
+        const float hold_deadband = home_target ?
+            kAuxiliaryMotorHomeHoldDeadband : kAuxiliaryMotorHoldDeadband;
+        const float hold_gain_ramp_time = home_target ?
+            kAuxiliaryMotorHomeHoldGainRampTimeS : kAuxiliaryMotorHoldGainRampTimeS;
+        const float blend_step = (hold_gain_ramp_time > 1e-4f) ?
+            (kAuxiliaryMotorControlDtS / hold_gain_ramp_time) : 1.0f;
+        auxiliary_motor_hold_blend_ =
+            std::fmin(1.0f, auxiliary_motor_hold_blend_ + blend_step);
+
+        const float blend = auxiliary_motor_hold_blend_;
+        const float target_error = auxiliary_motor_target_angle_ - now_angle;
+
+        // deadband 内：锁定当前角、不施加恢复力矩，避免编码器量化噪声引起的极限环抖动。
+        // deadband 外：锁定到固定目标角，由 kp 生成正比于偏差的恢复力矩（到位/0.0 处的“大扭矩”），
+        //              震动/碰撞会被这套刚性 PD 主动顶回，而不是漂走。
+        control_angle = (std::fabs(target_error) <= hold_deadband) ?
+            now_angle : auxiliary_motor_target_angle_;
+        control_omega = 0.0f;
+        control_torque = kAuxiliaryMotorHoldTorqueNm;
+        control_kp = move_kp + blend * (hold_kp - move_kp);
+        control_kd = move_kd + blend * (hold_kd - move_kd);
+    }
+    else
+    {
+        // 运动段：跟随规划轨迹（偏软增益 + 角速度前馈），又快又平滑地逼近目标
+        auxiliary_motor_hold_blend_ = 0.0f;
+        control_angle = auxiliary_motor_smooth_angle_;
+        control_omega = target_omega;
+        control_torque = kAuxiliaryMotorMoveTorqueNm;
+        control_kp = move_kp;
+        control_kd = move_kd;
+    }
+
+    Auxiliary_Motor.Set_Control_Maintain_Postion(
+        control_angle,
+        control_omega,
+        control_torque,
+        control_kp,
+        control_kd);
     Auxiliary_Motor.TIM_Send_PeriodElapsedCallback();
 }
 
@@ -1457,6 +1351,70 @@ void Class_Robot::_Log_Gripper_Action(const char *msg, bool ok)
 {
     (void)msg;
     (void)ok;
+}
+
+void Class_Robot::_Integrate_Odometry()
+{
+    if (!pub_odometry_) return;
+
+    const int64_t now = now_ns();
+
+    // 首帧只记录时间基准，下一帧才开始积分（避免用一个超大 dt 积分出跳变）
+    if (!odom_state_.initialized)
+    {
+        odom_state_.last_ns = now;
+        odom_state_.initialized = true;
+        return;
+    }
+
+    const double dt = static_cast<double>(now - odom_state_.last_ns) * 1e-9;
+    odom_state_.last_ns = now;
+    if (dt <= 0.0 || dt > 0.1) return;  // 调度抖动/异常 dt 跳过，不污染积分
+
+    // 数据源：机体瞬时速度（轮速正解）+ IMU 角速度。均为瞬时值，无累积状态。
+    const float vx = Chassis.Get_Now_Velocity_X();
+    const float vy = Chassis.Get_Now_Velocity_Y();
+    const float wz_wheel = Chassis.Get_Now_Omega();
+
+    // IMU 失效（超时/未连接）时降级为纯轮速，避免 IMU 断线导致 yaw 卡死或读到刷新值
+    const auto imu = imu_heading_hold_.Get_Snapshot();
+    const float wz_imu = imu.valid ? imu.angular_velocity_z : wz_wheel;
+
+    // --- yaw：互补滤波（轮速里程基准 + IMU 短期预测 + 缓慢拉回纠正 IMU 漂移）---
+    odom_state_.wheel_yaw += static_cast<double>(wz_wheel) * dt;
+
+    const float speed = std::sqrt(vx * vx + vy * vy);
+    const float alpha = (speed >= Odom_Speed_Threshold_MPS) ?
+        Odom_Yaw_Alpha_Fast : Odom_Yaw_Alpha_Slow;
+
+    odom_state_.yaw_fused += static_cast<double>(wz_imu) * dt;              // ① IMU 角速度积分
+    odom_state_.yaw_fused +=
+        static_cast<double>(alpha) * (odom_state_.wheel_yaw - odom_state_.yaw_fused);  // ② 拉回轮速基准
+
+    while (odom_state_.yaw_fused >  M_PI) odom_state_.yaw_fused -= 2.0 * M_PI;
+    while (odom_state_.yaw_fused < -M_PI) odom_state_.yaw_fused += 2.0 * M_PI;
+
+    // --- x/y：纯轮速积分（机体坐标系 → 世界坐标系），无绝对参考，长期会漂（设计接受）---
+    const double cos_yaw = std::cos(odom_state_.yaw_fused);
+    const double sin_yaw = std::sin(odom_state_.yaw_fused);
+    odom_state_.x += (static_cast<double>(vx) * cos_yaw - static_cast<double>(vy) * sin_yaw) * dt;
+    odom_state_.y += (static_cast<double>(vx) * sin_yaw + static_cast<double>(vy) * cos_yaw) * dt;
+
+    nav_msgs::msg::Odometry msg;
+    msg.header.stamp = bridge_node_->now();
+    msg.header.frame_id = "odom";
+    msg.child_frame_id = "base_link";
+    msg.pose.pose.position.x = odom_state_.x;
+    msg.pose.pose.position.y = odom_state_.y;
+    msg.pose.pose.position.z = 0.0;
+    msg.pose.pose.orientation.x = 0.0;
+    msg.pose.pose.orientation.y = 0.0;
+    msg.pose.pose.orientation.z = std::sin(odom_state_.yaw_fused * 0.5);
+    msg.pose.pose.orientation.w = std::cos(odom_state_.yaw_fused * 0.5);
+    msg.twist.twist.linear.x = vx;   // 瞬时值，直接转报，非积分用的历史值
+    msg.twist.twist.linear.y = vy;
+    msg.twist.twist.angular.z = wz_imu;  // 瞬时角速度，无漂移问题，无需融合
+    pub_odometry_->publish(msg);
 }
 
 void Class_Robot::_Send_Odometry()

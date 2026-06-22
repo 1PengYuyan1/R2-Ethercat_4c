@@ -340,7 +340,9 @@ static void Consume_CAN_Rx()
             robot.CAN_Rx_Callback(raw.channel, raw.msg.id, raw.msg.data, raw.msg.dlen);
         }
 
-        if (raw.slave_id == kTofSlave2Id)
+        // slave2：升降用的 up/down ToF；slave1：底盘车头面左右 ToF（用于台阶姿态绝对纠正）。
+        // CAN_Rx_ToF_Frame 内部按 (slave/通道/ID) 精确匹配，非 ToF 帧直接忽略，故可放心整流。
+        if (raw.slave_id == kTofSlave2Id || raw.slave_id == kVehicleSlaveId)
         {
             robot.Lift.CAN_Rx_ToF_Frame(raw.slave_id, raw.channel, raw.msg.id, raw.msg.data, raw.msg.dlen);
         }
