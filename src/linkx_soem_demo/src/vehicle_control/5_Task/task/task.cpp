@@ -401,11 +401,11 @@ static void Disable_All_Devices(bool use_io_thread)
             robot.Lift.Motor_Drive_Right[i].CAN_Send_Exit();
             robot.Lift.Motor_Lift[i].CAN_Send_Exit();
         }
-        robot.Auxiliary_Motor.CAN_Send_Exit();
+        robot.Lift.Auxiliary_Motor.CAN_Send_Exit();
         // 软件级状态字也置 DISABLE，防止 1ms 回调再次入队 MIT 帧
         robot.Chassis.Set_Chassis_Control_Type(Chassis_Omni_Control_Type_DISABLE);
         robot.Lift.Set_Control_Type(CHARIOT_LIFT_CONTROL_DISABLE);
-        robot.Auxiliary_Motor.Set_Control_Status(Motor_DM_Status_DISABLE);
+        robot.Lift.Auxiliary_Motor.Set_Control_Status(Motor_DM_Status_DISABLE);
 
         // 同步模式：在本线程刷出；异步模式：由仍在运行的 IO 线程刷出。
         if (!use_io_thread)

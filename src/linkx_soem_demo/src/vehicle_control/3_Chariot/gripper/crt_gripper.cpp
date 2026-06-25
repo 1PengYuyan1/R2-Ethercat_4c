@@ -18,7 +18,8 @@ bool Class_Chariot_Gripper::Send_Command(uint8_t command)
         return false;
     }
 
-    const uint8_t data[1] = {command};
+    // 下位机需要 3 字节负载：命令码重复 3 次（GRAB=01,01,01；RELEASE=02,02,02）。
+    const uint8_t data[3] = {command, command, command};
     return linkx_send_classic_can_frame(LinkX_Handler,
                                         CAN_Channel,
                                         CAN_ID,

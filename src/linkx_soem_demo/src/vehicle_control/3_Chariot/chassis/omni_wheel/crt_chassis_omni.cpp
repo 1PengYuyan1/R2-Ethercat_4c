@@ -33,7 +33,7 @@ void Class_Chassis_Omni::Init_Motor_Params()
 {
     wheel_params_[0] = {
         .wheel_kp                = 0.0f,
-        .wheel_kd                = 3.5f,
+        .wheel_kd                = 4.5f,  // 2026-06-26 后轮→4.5：继续追平前轮，消轻微偏头
         .wheel_direction         = 1.0f,
         .wheel_speed_correction  = 0.849f,
         .wheel_omega_deadzone    = 0.05f,
@@ -48,7 +48,7 @@ void Class_Chassis_Omni::Init_Motor_Params()
 
     wheel_params_[1] = {
         .wheel_kp                = 0.0f,
-        .wheel_kd                = 1.2f,
+        .wheel_kd                = 3.5f,  // 2026-06-26 1.2→3.5：抬前轮速度环跟踪，抑制横移甩尾
         .wheel_direction         = 1.0f,
         .wheel_speed_correction  = 1.275f,
         .wheel_omega_deadzone    = 0.05f,
@@ -63,7 +63,7 @@ void Class_Chassis_Omni::Init_Motor_Params()
 
     wheel_params_[2] = {
         .wheel_kp                = 0.0f,
-        .wheel_kd                = 0.5f,
+        .wheel_kd                = 3.5f,  // 2026-06-26 0.5→3.5：抬前轮速度环跟踪，抑制横移甩尾
         .wheel_direction         = 1.0f,
         .wheel_speed_correction  = 1.147f,
         .wheel_omega_deadzone    = 0.05f,
@@ -78,7 +78,7 @@ void Class_Chassis_Omni::Init_Motor_Params()
 
     wheel_params_[3] = {
         .wheel_kp                = 0.0f,
-        .wheel_kd                = 3.5f,
+        .wheel_kd                = 4.5f,  // 2026-06-26 后轮→4.5：继续追平前轮，消轻微偏头
         .wheel_direction         = 1.0f,
         .wheel_speed_correction  = 0.871f,
         .wheel_omega_deadzone    = 0.05f,

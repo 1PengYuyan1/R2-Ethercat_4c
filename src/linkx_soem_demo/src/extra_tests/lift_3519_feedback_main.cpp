@@ -25,6 +25,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -42,6 +43,7 @@ namespace
 constexpr int kChannelCount = 4;
 constexpr uint32_t kControlPeriodMs = 1;
 constexpr uint32_t kAlivePeriodMs = 100;
+constexpr uint32_t kDefaultMotorSlaveId = 2;
 constexpr float kLiftMotorToRodRatio = 3.0f;
 constexpr float kRadPerSecToRpm = 60.0f / (2.0f * 3.14159265358979323846f);
 constexpr float kCelsiusToKelvin = 273.15f;
@@ -92,8 +94,9 @@ struct LiftFeedbackSample
 ecat_master_t st_master {};
 linkx_t st_linkx {};
 Class_Chariot_Lift st_lift;
-Class_Motor_DM_Normal st_extra_motor_ch0_id7;
 std::atomic<bool> st_running {true};
+std::array<uint64_t, kChannelCount> st_can_rx_total {};
+std::array<std::map<uint32_t, uint64_t>, kChannelCount> st_can_id_counts {};
 
 void on_signal(int)
 {
@@ -175,6 +178,13 @@ float parse_float(const std::string &value, float fallback)
     return (end == value.c_str()) ? fallback : parsed;
 }
 
+uint32_t parse_u32(const std::string &value, uint32_t fallback)
+{
+    char *end = nullptr;
+    const unsigned long parsed = std::strtoul(value.c_str(), &end, 10);
+    return (end == value.c_str()) ? fallback : static_cast<uint32_t>(parsed);
+}
+
 ModuleSelection parse_module_selection(const std::string &value, bool &ok)
 {
     ok = true;
@@ -200,12 +210,18 @@ bool module_selected(ModuleSelection selection, Enum_Chariot_Lift_Module module)
 
 bool extra_motor_selected(ModuleSelection selection)
 {
-    return selection == ModuleSelection::Extra07;
+    return selection == ModuleSelection::Extra07 ||
+           selection == ModuleSelection::Both;
 }
 
 Class_Motor_DM_Normal &lift_motor(Enum_Chariot_Lift_Module module)
 {
     return st_lift.Motor_Lift[static_cast<int>(module)];
+}
+
+Class_Motor_DM_Normal &extra_motor()
+{
+    return st_lift.Auxiliary_Motor;
 }
 
 const char *dm_status_name(Enum_Motor_DM_Status status)
@@ -289,14 +305,10 @@ bool ec_receive_once(bool allow_stopping = false)
     {
         while (linkx_quick_recv(&st_linkx, ch, &msg))
         {
-            const bool routed = st_lift.CAN_Rx_Callback(ch, msg.id, msg.data);
             const uint32_t can_id_std = msg.id & 0x7FFU;
-            if (!routed &&
-                ch == kExtraMotorChannel &&
-                can_id_std == st_extra_motor_ch0_id7.DM_CAN_Rx_ID)
-            {
-                st_extra_motor_ch0_id7.CAN_RxCpltCallback(msg.data);
-            }
+            ++st_can_rx_total[ch];
+            ++st_can_id_counts[ch][can_id_std];
+            st_lift.CAN_Rx_Callback(ch, msg.id, msg.data, msg.dlen);
         }
     }
 
@@ -312,7 +324,7 @@ void alive_selected_lift_motors(ModuleSelection selection)
     }
 
     if (extra_motor_selected(selection))
-        st_extra_motor_ch0_id7.TIM_Alive_PeriodElapsedCallback();
+        extra_motor().TIM_Alive_PeriodElapsedCallback();
 }
 
 void enable_selected_lift_motors(ModuleSelection selection)
@@ -334,11 +346,12 @@ void enable_selected_lift_motors(ModuleSelection selection)
 
     if (extra_motor_selected(selection))
     {
-        const auto ctrl = st_extra_motor_ch0_id7.Get_Now_Control_Status();
+        auto &motor = extra_motor();
+        const auto ctrl = motor.Get_Now_Control_Status();
         if (ctrl != Motor_DM_Control_Status_ENABLE)
         {
-            st_extra_motor_ch0_id7.CAN_Send_Clear_Error();
-            st_extra_motor_ch0_id7.CAN_Send_Enter();
+            motor.CAN_Send_Clear_Error();
+            motor.CAN_Send_Enter();
         }
     }
 }
@@ -352,7 +365,7 @@ void exit_selected_lift_motors(ModuleSelection selection)
     }
 
     if (extra_motor_selected(selection))
-        st_extra_motor_ch0_id7.CAN_Send_Exit();
+        extra_motor().CAN_Send_Exit();
 }
 
 const char *module_selection_name(ModuleSelection selection)
@@ -371,6 +384,34 @@ std::string hex_id(uint16_t id)
 {
     std::ostringstream ss;
     ss << "0x" << std::uppercase << std::hex << id;
+    return ss.str();
+}
+
+std::string format_can_id_counts(uint8_t ch, std::size_t max_ids = 12)
+{
+    std::ostringstream ss;
+    const auto &counts = st_can_id_counts[ch];
+    std::size_t printed = 0;
+
+    ss << "CAN" << static_cast<int>(ch) << ":";
+    if (counts.empty())
+    {
+        ss << " none";
+        return ss.str();
+    }
+
+    for (const auto &entry : counts)
+    {
+        if (printed >= max_ids)
+        {
+            ss << " ...";
+            break;
+        }
+
+        ss << ' ' << hex_id(static_cast<uint16_t>(entry.first)) << '=' << entry.second;
+        ++printed;
+    }
+
     return ss.str();
 }
 
@@ -446,7 +487,7 @@ LiftFeedbackSample read_extra_motor_feedback_sample()
 {
     return read_motor_feedback_sample(kExtraMotorName,
                                       kExtraMotorChannel,
-                                      st_extra_motor_ch0_id7);
+                                      extra_motor());
 }
 
 class CsvRecorder
@@ -529,19 +570,21 @@ void print_feedback_table(ModuleSelection selection,
                           double elapsed_s,
                           bool enable_motors,
                           const CsvRecorder *recorder,
-                          float record_hz)
+                          float record_hz,
+                          bool scan_can)
 {
     std::cout << "\033[H\033[J";
     std::cout << std::fixed << std::setprecision(3);
     std::cout << "R2 Lift DM3519 Feedback Monitor"
               << " | t=" << elapsed_s << "s"
+              << " | slave=" << st_linkx.slave_id
               << " | motor:rod=3:1"
               << " | enable_enter=" << (enable_motors ? "ON" : "OFF")
               << " | MIT command frames=OFF"
               << "\n\n";
 
     std::cout << std::left
-              << std::setw(7)  << "Module"
+              << std::setw(8)  << "Module"
               << std::setw(4)  << "Ch"
               << std::setw(6)  << "Rx"
               << std::setw(6)  << "Tx"
@@ -559,11 +602,11 @@ void print_feedback_table(ModuleSelection selection,
               << std::setw(10) << "RRPM"
               << "\n";
 
-    std::cout << std::string(129, '-') << "\n";
+    std::cout << std::string(130, '-') << "\n";
 
     auto print_sample = [](const LiftFeedbackSample &sample) {
         std::cout << std::left
-                  << std::setw(7)  << sample.name
+                  << std::setw(8)  << sample.name
                   << std::setw(4)  << static_cast<int>(sample.can_channel)
                   << std::setw(6)  << hex_id(sample.rx_id)
                   << std::setw(6)  << hex_id(sample.tx_id)
@@ -595,6 +638,15 @@ void print_feedback_table(ModuleSelection selection,
         print_sample(read_extra_motor_feedback_sample());
 
     std::cout << "\nUnits: MPos/RPos=rad, MVel/RVel=rad/s, MRPM/RRPM=rpm, Torque=Nm, MOS/Rotor=C\n";
+    std::cout << "CAN RX totals (slave " << st_linkx.slave_id << "):";
+    for (int ch = 0; ch < kChannelCount; ++ch)
+        std::cout << " CAN" << ch << '=' << st_can_rx_total[ch];
+    std::cout << "\n";
+    if (scan_can)
+    {
+        for (int ch = 0; ch < kChannelCount; ++ch)
+            std::cout << "  " << format_can_id_counts(static_cast<uint8_t>(ch)) << "\n";
+    }
     std::cout << "Limits: pmax=" << lift_motor(CHARIOT_LIFT_MODULE_FRONT).Get_Radian_Max()
               << " rad, vmax=" << lift_motor(CHARIOT_LIFT_MODULE_FRONT).Get_Omega_Max()
               << " rad/s, tmax=" << lift_motor(CHARIOT_LIFT_MODULE_FRONT).Get_Torque_Max()
@@ -614,14 +666,17 @@ void print_usage(const char *argv0)
 {
     std::cerr
         << "Usage:\n"
-        << "  " << argv0 << " [--ifname enp86s0] [--module rear|front|front07|both]\n"
+        << "  " << argv0 << " [--ifname enp4s0] [--slave-id 2] [--module rear|front|front07|both|all]\n"
         << "        [--print-hz 10] [--duration 0] [--enable 1] [--exit-on-stop 1]\n"
         << "        [--record 0|1] [--record-path var_data/lift/lift_3519_feedback_log.csv]\n"
-        << "        [--record-hz 50]\n\n"
+        << "        [--record-hz 50] [--scan-can 0|1]\n\n"
         << "Notes:\n"
         << "  duration=0 keeps running until Ctrl-C.\n"
+        << "  slave-id defaults to R2_MOTOR_SLAVE, then LIFT3519_SLAVE_ID, then 2.\n"
         << "  enable=1 sends DM clear-error/enter frames so feedback is live.\n"
+        << "  both/all monitors front, rear, and front07.\n"
         << "  front07 monitors CAN0 Tx 0x07 / feedback Rx 0x17.\n"
+        << "  scan-can=1 prints observed raw CAN IDs per LinkX channel.\n"
         << "  It does not send MIT position/velocity/torque command frames.\n"
         << "  rod feedback is calculated as rod = motor / 3.\n";
 }
@@ -667,7 +722,19 @@ int main(int argc, char **argv)
         argc,
         argv,
         "ifname",
-        std::getenv("IFNAME") ? std::getenv("IFNAME") : "enp86s0");
+        std::getenv("IFNAME") ? std::getenv("IFNAME") : "enp4s0");
+
+    const char *slave_env = std::getenv("R2_MOTOR_SLAVE");
+    if (slave_env == nullptr || slave_env[0] == '\0')
+        slave_env = std::getenv("LIFT3519_SLAVE_ID");
+    const uint32_t slave_id = parse_u32(
+        cli_value(argc,
+                  argv,
+                  "slave-id",
+                  slave_env != nullptr && slave_env[0] != '\0'
+                      ? slave_env
+                      : std::to_string(kDefaultMotorSlaveId)),
+        kDefaultMotorSlaveId);
 
     bool module_ok = false;
     const ModuleSelection module_selection = parse_module_selection(
@@ -678,7 +745,7 @@ int main(int argc, char **argv)
         module_ok);
     if (!module_ok)
     {
-        std::cerr << "[LIFT3519] invalid --module, expected rear|front|front07|both\n";
+        std::cerr << "[LIFT3519] invalid --module, expected rear|front|front07|both|all\n";
         print_usage(argv[0]);
         return 1;
     }
@@ -701,6 +768,7 @@ int main(int argc, char **argv)
     const bool enable_motors = cli_bool(argc, argv, "enable", "LIFT3519_ENABLE", true);
     const bool exit_on_stop = cli_bool(argc, argv, "exit-on-stop", "LIFT3519_EXIT_ON_STOP", true);
     const bool record_enabled = cli_bool(argc, argv, "record", "LIFT3519_RECORD", false);
+    const bool scan_can = cli_bool(argc, argv, "scan-can", "LIFT3519_SCAN_CAN", false);
     const std::string record_path = cli_value(
         argc,
         argv,
@@ -718,11 +786,13 @@ int main(int argc, char **argv)
     std::cout << "===============================================\n"
               << "  R2 Lift DM3519 Feedback Monitor\n"
               << "  IFNAME        : " << ifname << "\n"
+              << "  SLAVE_ID      : " << slave_id << "\n"
               << "  MODULE        : " << module_selection_name(module_selection) << "\n"
               << "  ENABLE        : " << (enable_motors ? "enter only" : "off") << "\n"
               << "  EXIT_ON_STOP  : " << (exit_on_stop ? "1" : "0") << "\n"
               << "  MIT COMMAND   : off\n"
-              << "  RECORD        : " << (record_enabled ? "on" : "off") << "\n";
+              << "  RECORD        : " << (record_enabled ? "on" : "off") << "\n"
+              << "  SCAN_CAN      : " << (scan_can ? "on" : "off") << "\n";
     if (record_enabled)
     {
         std::cout << "  RECORD_PATH   : " << record_path << "\n"
@@ -739,7 +809,16 @@ int main(int argc, char **argv)
     }
     else
     {
-        std::cout << "  TARGET MOTORS : front CAN0 Tx 0x05 Rx 0x15; rear CAN1 Tx 0x05 Rx 0x15\n";
+        std::cout << "  TARGET MOTORS : front CAN0 Tx 0x05 Rx 0x15; rear CAN1 Tx 0x05 Rx 0x15";
+        if (extra_motor_selected(module_selection))
+        {
+            std::cout << "; " << kExtraMotorName
+                      << " CAN" << static_cast<int>(kExtraMotorChannel)
+                      << " Tx 0x" << std::hex << std::uppercase << static_cast<int>(kExtraMotorTxId)
+                      << " Rx 0x" << static_cast<int>(kExtraMotorRxId)
+                      << std::dec;
+        }
+        std::cout << "\n";
     }
     std::cout << "===============================================\n";
 
@@ -753,7 +832,14 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    linkx_init(&st_linkx, 1, &st_master.ctx);
+    if (slave_id == 0 || st_master.slave_count < static_cast<int>(slave_id))
+    {
+        std::cerr << "[LIFT3519] requested EtherCAT slave " << slave_id
+                  << ", but found only " << st_master.slave_count << " slave(s)\n";
+        return 2;
+    }
+
+    linkx_init(&st_linkx, slave_id, &st_master.ctx);
 
     if (!configure_linkx_can())
         return 2;
@@ -765,17 +851,6 @@ int main(int argc, char **argv)
     }
 
     st_lift.Init(&st_linkx);
-    st_extra_motor_ch0_id7.Init(&st_linkx,
-                                kExtraMotorChannel,
-                                kExtraMotorRxId,
-                                kExtraMotorTxId,
-                                Motor_DM_Control_Method_NORMAL_MIT,
-                                lift_motor(CHARIOT_LIFT_MODULE_FRONT).Get_Radian_Max(),
-                                lift_motor(CHARIOT_LIFT_MODULE_FRONT).Get_Omega_Max(),
-                                lift_motor(CHARIOT_LIFT_MODULE_FRONT).Get_Torque_Max(),
-                                lift_motor(CHARIOT_LIFT_MODULE_FRONT).Get_Current_Max());
-    st_extra_motor_ch0_id7.Set_Use_FDCAN(true);
-    st_extra_motor_ch0_id7.Set_Force_Output_Without_Feedback(false);
 
     CsvRecorder recorder;
     if (record_enabled && !recorder.Open(record_path))
@@ -820,7 +895,8 @@ int main(int argc, char **argv)
                                  static_cast<double>(tick) * 0.001,
                                  enable_motors,
                                  record_enabled ? &recorder : nullptr,
-                                 record_hz);
+                                 record_hz,
+                                 scan_can);
 
         if (duration_ticks > 0U && tick >= duration_ticks)
             break;

@@ -34,7 +34,10 @@ int main(int argc, char *argv[]) {
     try {
         Robot_Control_Loop(ifname.c_str());
     } catch (const std::exception& e) {
-        (void)e;
+        std::fprintf(stderr, "[R2] Robot_Control_Loop 异常退出: %s\n", e.what());
+        return -1;
+    } catch (...) {
+        std::fprintf(stderr, "[R2] Robot_Control_Loop 抛出未知异常退出\n");
         return -1;
     }
     

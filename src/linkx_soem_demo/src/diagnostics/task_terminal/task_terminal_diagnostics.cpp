@@ -69,6 +69,7 @@ const char *LiftToFName(int index)
     case CHARIOT_LIFT_TOF_UP_BACK: return "up_back";
     case CHARIOT_LIFT_TOF_DOWN_FRONT: return "down_front";
     case CHARIOT_LIFT_TOF_DOWN_BACK: return "down_back";
+    case CHARIOT_LIFT_TOF_DOWN_BACK2: return "down_back2";
     case CHARIOT_LIFT_TOF_CHASSIS_FRONT_LEFT: return "front_left";
     case CHARIOT_LIFT_TOF_CHASSIS_FRONT_RIGHT: return "front_right";
     default: return "unknown";
@@ -83,6 +84,7 @@ const char *LiftToFTopic(int index)
     case CHARIOT_LIFT_TOF_UP_BACK: return "/high/up_back/range";
     case CHARIOT_LIFT_TOF_DOWN_FRONT: return "/high/down_front/range";
     case CHARIOT_LIFT_TOF_DOWN_BACK: return "/high/down_back/range";
+    case CHARIOT_LIFT_TOF_DOWN_BACK2: return "/high/down_back2/range";
     case CHARIOT_LIFT_TOF_CHASSIS_FRONT_LEFT: return "/high/front_left/range";
     case CHARIOT_LIFT_TOF_CHASSIS_FRONT_RIGHT: return "/high/front_right/range";
     default: return "/high/unknown/range";

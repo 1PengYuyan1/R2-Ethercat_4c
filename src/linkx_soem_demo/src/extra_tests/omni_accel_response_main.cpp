@@ -70,6 +70,7 @@ std::atomic<bool> st_running {true};
 struct Options
 {
     std::string ifname = "enp86s0";
+    int slave_id = 2;
     std::vector<float> speeds_rad_s {10.0f, 30.0f, 60.0f};
     float direction = 1.0f;
     float duration_s = 2.5f;
@@ -84,6 +85,8 @@ struct Options
     float profile_accel_limit = OMNI_WHEEL_ACCEL_LIMIT_RAD_S2;
     float profile_decel_limit = OMNI_WHEEL_DECEL_LIMIT_RAD_S2;
     bool use_feedforward = true;
+    bool free_inactive_single = false;
+    float firmware_omega_sign = 1.0f;
     bool has_ff_scale_override = false;
     std::array<float, OMNI_WHEEL_NUM> ff_scale_override {};
     bool has_kd_override_list = false;
@@ -99,12 +102,14 @@ struct DirectCommandState
     std::array<float, OMNI_WHEEL_NUM> raw_target {};
     std::array<float, OMNI_WHEEL_NUM> target {};
     std::array<float, OMNI_WHEEL_NUM> accel_filtered {};
+    std::array<bool, OMNI_WHEEL_NUM> enabled {};
     bool use_profile = false;
     float profile_accel_limit = OMNI_WHEEL_ACCEL_LIMIT_RAD_S2;
     float profile_decel_limit = OMNI_WHEEL_DECEL_LIMIT_RAD_S2;
     bool use_feedforward = true;
     float kp_override = std::numeric_limits<float>::quiet_NaN();
     float kd_override = std::numeric_limits<float>::quiet_NaN();
+    float firmware_omega_sign = 1.0f;
 };
 
 DirectCommandState st_cmd;
@@ -180,13 +185,12 @@ void on_signal(int)
 
 float actual_wheel_omega(int wheel)
 {
-    return st_chassis.Motor_Wheel[wheel].Get_Now_Omega() *
-           OMNI_WHEEL_FEEDBACK_GEAR_SCALE;
+    return st_chassis.Motor_Wheel[wheel].Get_Now_Omega();
 }
 
 float firmware_command_omega(float wheel_omega)
 {
-    return wheel_omega * OMNI_WHEEL_COMMAND_GEAR_SCALE;
+    return st_cmd.firmware_omega_sign * wheel_omega;
 }
 
 float env_f(const char *name, float fallback)
@@ -312,6 +316,7 @@ void print_usage(const char *argv0)
         << "  sudo IFNAME=enp86s0 " << argv0 << " [options]\n\n"
         << "Options:\n"
         << "  --ifname IFACE        EtherCAT NIC, default IFNAME env or enp86s0\n"
+        << "  --slave-id N          LinkX EtherCAT slave carrying wheel motors, default R2_MOTOR_SLAVE env or 2\n"
         << "  --speeds LIST         target wheel speeds rad/s, default 10,30,60\n"
         << "  --direction 1|-1      command direction, default 1\n"
         << "  --duration SEC        max duration per step, default 2.5\n"
@@ -326,6 +331,8 @@ void print_usage(const char *argv0)
         << "  --profile-accel A     profile acceleration rad/s^2, default project 550\n"
         << "  --profile-decel A     profile deceleration rad/s^2, default project 700\n"
         << "  --ff 0|1              use chassis feedforward model, default 1\n"
+        << "  --free-inactive 0|1   in single-wheel tests, DM-exit inactive wheels instead of holding zero, default 0\n"
+        << "  --omega-sign 1|-1     multiply firmware control omega only, diagnostic default 1\n"
         << "  --ff-scales LIST      override wheel feedforward scales, e.g. 0.84,0.38,0.77,0.84\n"
         << "  --kds LIST            override per-wheel MIT Kd, e.g. 3.0,1.5,1.5,5.0\n"
         << "  --kp K                override MIT Kp for all wheels\n"
@@ -341,6 +348,8 @@ Options parse_options(int argc, char **argv)
         opt.ifname = env;
 
     opt.ifname = cli_get(argc, argv, "ifname", opt.ifname.c_str());
+    opt.slave_id = std::atoi(cli_get(argc, argv, "slave-id",
+                                     std::to_string(env_i("R2_MOTOR_SLAVE", opt.slave_id)).c_str()));
     opt.speeds_rad_s = parse_float_list(
         cli_get(argc, argv, "speeds",
                 std::getenv("OMNI_ACCEL_SPEEDS") ? std::getenv("OMNI_ACCEL_SPEEDS") : "10,30,60"),
@@ -382,6 +391,14 @@ Options parse_options(int argc, char **argv)
         nullptr);
     opt.use_feedforward = std::atoi(cli_get(argc, argv, "ff",
                                             std::to_string(env_i("OMNI_ACCEL_FF", opt.use_feedforward ? 1 : 0)).c_str())) != 0;
+    opt.free_inactive_single = std::atoi(
+        cli_get(argc, argv, "free-inactive",
+                std::to_string(env_i("OMNI_ACCEL_FREE_INACTIVE", opt.free_inactive_single ? 1 : 0)).c_str())) != 0;
+    opt.firmware_omega_sign = std::strtof(
+        cli_get(argc, argv, "omega-sign",
+                std::to_string(env_f("OMNI_ACCEL_OMEGA_SIGN", opt.firmware_omega_sign)).c_str()),
+        nullptr);
+    opt.firmware_omega_sign = (opt.firmware_omega_sign < 0.0f) ? -1.0f : 1.0f;
     if (cli_has(argc, argv, "ff-scales"))
     {
         const std::string scales = cli_get(argc, argv, "ff-scales", "");
@@ -416,6 +433,8 @@ Options parse_options(int argc, char **argv)
     opt.profile_accel_limit = std::max(1.0f, opt.profile_accel_limit);
     opt.profile_decel_limit = std::max(1.0f, opt.profile_decel_limit);
     opt.sample_hz = std::max(1, opt.sample_hz);
+    if (opt.slave_id < 1)
+        opt.slave_id = 1;
 
     mkdir("var_data", 0755);
     mkdir("var_data/omni", 0755);
@@ -484,11 +503,23 @@ void reset_direct_command_state()
     st_cmd.raw_target.fill(0.0f);
     st_cmd.target.fill(0.0f);
     st_cmd.accel_filtered.fill(0.0f);
+    st_cmd.enabled.fill(true);
 }
 
-void set_direct_targets(const std::array<float, OMNI_WHEEL_NUM> &targets)
+void set_direct_targets(const std::array<float, OMNI_WHEEL_NUM> &targets,
+                        const std::array<bool, OMNI_WHEEL_NUM> &enabled = {true, true, true, true})
 {
     st_cmd.raw_target = targets;
+    st_cmd.enabled = enabled;
+    for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
+    {
+        if (!st_cmd.enabled[i])
+        {
+            st_cmd.raw_target[i] = 0.0f;
+            st_cmd.target[i] = 0.0f;
+            st_cmd.accel_filtered[i] = 0.0f;
+        }
+    }
 }
 
 void apply_direct_targets()
@@ -571,6 +602,14 @@ void apply_direct_targets()
     {
         auto &motor = st_chassis.Motor_Wheel[i];
         const auto &p = st_chassis.wheel_params_[i];
+        if (!st_cmd.enabled[i])
+        {
+            motor.Set_Control_Status(Motor_DM_Status_DISABLE);
+            motor.Set_Control_Maintain_Postion(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+            motor.CAN_Send_Exit();
+            continue;
+        }
+
         const float target = profiled_targets[i];
 
         float torque_ff = 0.0f;
@@ -633,6 +672,8 @@ bool ec_step(uint32_t tick)
         for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
         {
             st_chassis.Motor_Wheel[i].TIM_Alive_PeriodElapsedCallback();
+            if (!st_cmd.enabled[i])
+                continue;
             if (st_chassis.Motor_Wheel[i].Get_Status() != Motor_DM_Status_ENABLE)
                 st_chassis.Motor_Wheel[i].CAN_Send_Enter();
         }
@@ -657,7 +698,7 @@ void run_for_ms(uint32_t &tick, uint32_t ms)
     }
 }
 
-bool init_ethercat_linkx(const std::string &ifname)
+bool init_ethercat_linkx(const std::string &ifname, int slave_id)
 {
     if (!ecat_master_init(&st_master, ifname.c_str()))
     {
@@ -665,7 +706,14 @@ bool init_ethercat_linkx(const std::string &ifname)
         return false;
     }
 
-    linkx_init(&st_linkx, 1, &st_master.ctx);
+    if (slave_id > st_master.ctx.slavecount)
+    {
+        std::cerr << "[OMNI-ACCEL] requested slave-id " << slave_id
+                  << " but only " << st_master.ctx.slavecount << " slave(s) found\n";
+        return false;
+    }
+
+    linkx_init(&st_linkx, static_cast<uint32_t>(slave_id), &st_master.ctx);
 
     for (int ch = 0; ch < kChannelCount; ++ch)
         linkx_switch_can_channel(&st_linkx, static_cast<uint8_t>(ch), true);
@@ -699,9 +747,13 @@ void write_csv_header(std::ofstream &csv)
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
         csv << "," << kWheelName[i] << "_target_omega";
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
+        csv << "," << kWheelName[i] << "_control_omega";
+    for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
         csv << "," << kWheelName[i] << "_actual_omega";
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
         csv << "," << kWheelName[i] << "_accel";
+    for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
+        csv << "," << kWheelName[i] << "_cmd_torque";
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
         csv << "," << kWheelName[i] << "_torque";
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
@@ -723,9 +775,13 @@ void write_csv_sample(std::ofstream &csv,
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
         csv << "," << trial.wheel[i].target_omega;
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
+        csv << "," << st_chassis.Motor_Wheel[i].Get_Control_Omega();
+    for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
         csv << "," << actual_wheel_omega(i);
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
         csv << "," << accel[i];
+    for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
+        csv << "," << st_chassis.Motor_Wheel[i].Get_Control_Torque();
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
         csv << "," << st_chassis.Motor_Wheel[i].Get_Now_Torque();
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
@@ -756,11 +812,22 @@ TrialResult run_trial(const Options &opt,
     trial.active_wheel = active_wheel;
 
     std::array<float, OMNI_WHEEL_NUM> targets {};
+    std::array<bool, OMNI_WHEEL_NUM> enabled {};
     targets.fill(0.0f);
+    enabled.fill(true);
     if (active_wheel >= 0)
+    {
         targets[active_wheel] = opt.direction * target_abs_omega;
+        if (opt.free_inactive_single)
+        {
+            enabled.fill(false);
+            enabled[active_wheel] = true;
+        }
+    }
     else
+    {
         targets.fill(opt.direction * target_abs_omega);
+    }
 
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
     {
@@ -776,9 +843,11 @@ TrialResult run_trial(const Options &opt,
         std::cout << " active=" << kWheelName[active_wheel];
     else
         std::cout << " active=ALL";
+    if (active_wheel >= 0 && opt.free_inactive_single)
+        std::cout << " inactive=FREE";
     std::cout << "\n";
 
-    set_direct_targets(zero_targets());
+    set_direct_targets(zero_targets(), enabled);
     run_for_ms(tick, static_cast<uint32_t>(opt.settle_s * 1000.0f));
     reset_direct_command_state();
 
@@ -799,7 +868,7 @@ TrialResult run_trial(const Options &opt,
                  std::min(opt.reach_frac * target_abs_omega,
                           target_abs_omega - opt.reach_abs_tol));
 
-    set_direct_targets(targets);
+    set_direct_targets(targets, enabled);
     auto next_wakeup = std::chrono::steady_clock::now();
     for (uint32_t ms = 0; ms < total_ms && st_running.load(); ++ms)
     {
@@ -1058,6 +1127,28 @@ void write_trial_table(std::ostream &os,
             os << " W" << i << "=" << wr.overshoot_pct;
         }
         os << "\n";
+
+        os << "    signed_omega_final/max:";
+        for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
+        {
+            const auto &wr = trial.wheel[i];
+            if (!wr.commanded)
+                continue;
+            const float sign = (wr.target_omega >= 0.0f) ? 1.0f : -1.0f;
+            os << " W" << i << "=" << (sign * wr.final_omega)
+               << "/" << wr.max_signed_omega;
+        }
+        os << "\n";
+
+        os << "    signed_actual_torque_mean:";
+        for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
+        {
+            const auto &wr = trial.wheel[i];
+            if (!wr.commanded)
+                continue;
+            os << " W" << i << "=" << wr.torque_signed.mean();
+        }
+        os << "\n";
     }
 }
 
@@ -1085,6 +1176,8 @@ void write_summary(const Options &opt, const std::vector<TrialResult> &results)
        << " profile_accel=" << opt.profile_accel_limit
        << " profile_decel=" << opt.profile_decel_limit
        << " use_feedforward=" << (opt.use_feedforward ? 1 : 0)
+       << " free_inactive_single=" << (opt.free_inactive_single ? 1 : 0)
+       << " firmware_omega_sign=" << opt.firmware_omega_sign
        << "\n\n";
 
     os << "Current wheel params:\n";
@@ -1248,10 +1341,13 @@ int main(int argc, char **argv)
     st_cmd.profile_decel_limit = opt.profile_decel_limit;
     st_cmd.kp_override = opt.kp_override;
     st_cmd.kd_override = opt.kd_override;
+    st_cmd.firmware_omega_sign = opt.firmware_omega_sign;
+    st_cmd.enabled.fill(true);
 
     std::cout << "===============================================\n"
               << "  R2 Omni Wheel Acceleration Response Test\n"
               << "  IFNAME     : " << opt.ifname << "\n"
+              << "  slave-id   : " << opt.slave_id << "\n"
               << "  speeds     : ";
     for (size_t i = 0; i < opt.speeds_rad_s.size(); ++i)
     {
@@ -1269,11 +1365,13 @@ int main(int argc, char **argv)
               << " accel=" << opt.profile_accel_limit
               << " decel=" << opt.profile_decel_limit << "\n"
               << "  feedforward: " << (opt.use_feedforward ? "ON" : "OFF") << "\n"
+              << "  inactive   : " << (opt.free_inactive_single ? "FREE during single-wheel tests" : "hold zero during single-wheel tests") << "\n"
+              << "  omega sign : " << opt.firmware_omega_sign << "\n"
               << "  csv        : " << opt.csv_path << "\n"
               << "===============================================\n"
               << "[SAFETY] Wheels must be suspended and clear. Press Ctrl+C to stop.\n";
 
-    if (!init_ethercat_linkx(opt.ifname))
+    if (!init_ethercat_linkx(opt.ifname, opt.slave_id))
         return 2;
 
     st_chassis.Init(&st_linkx);

@@ -45,7 +45,7 @@ std::atomic<bool> st_running {true};
 struct Options
 {
     std::string ifname = "enp4s0";
-    float raise_angle = -8.0f;
+    float raise_angle = -24.0f;  // 电机角度(rad)；Set_Raise_Angle 现统一以电机角入参
     uint16_t near_cm = 10U;
     uint16_t jump_cm = 5U;
     uint32_t print_ms = 200U;
@@ -128,7 +128,7 @@ void print_usage(const char *argv0)
 {
     std::cerr
         << "Usage:\n"
-        << "  " << argv0 << " [--ifname enp86s0] [--raise-angle -8.0]\n"
+        << "  " << argv0 << " [--ifname enp86s0] [--raise-angle -24.0]\n"
         << "        [--near-cm 10] [--jump-cm 5] [--print-ms 200] [--duration 0]\n\n"
         << "Behavior:\n"
         << "  /high/up_front/range  condition -> front lift RAISE/deploy\n"
@@ -321,7 +321,7 @@ int main(int argc, char **argv)
                            argv,
                            "ifname",
                            std::getenv("IFNAME") ? std::getenv("IFNAME") : "enp86s0");
-    opt.raise_angle = parse_float(cli_value(argc, argv, "raise-angle", "-8.0"), -8.0f);
+    opt.raise_angle = parse_float(cli_value(argc, argv, "raise-angle", "-24.0"), -24.0f);
     opt.near_cm = parse_u16(cli_value(argc, argv, "near-cm", "10"), 10U);
     opt.jump_cm = parse_u16(cli_value(argc, argv, "jump-cm", "5"), 5U);
     opt.print_ms = std::max<uint32_t>(20U, parse_u32(cli_value(argc, argv, "print-ms", "200"), 200U));

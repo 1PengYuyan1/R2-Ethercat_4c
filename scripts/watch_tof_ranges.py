@@ -18,7 +18,7 @@ TOPICS = [
     "/high/right_left/range",
     "/high/right_right/range",
     "/high/back_left/range",
-    "/high/back_right/range",
+    "/high/down_back2/range",
     "/high/up_front/range",
     "/high/down_front/range",
     "/high/up_back/range",

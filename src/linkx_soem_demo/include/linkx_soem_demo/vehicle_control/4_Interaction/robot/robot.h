@@ -41,7 +41,6 @@ public:
     Class_Chassis_Omni Chassis;
     Class_Chariot_Lift Lift;
     Class_Chariot_Gripper Gripper;
-    Class_Motor_DM_Normal Auxiliary_Motor;
 
     void Init(linkx_t *__LinkX_Handler);
     void Loop();
@@ -62,16 +61,6 @@ protected:
         HOLD_ZERO,
         ROS2,
         REMOTE
-    };
-
-    enum class LiftAuxSequenceState {
-        IDLE,
-        RAISE_WAIT_LIFT_REACHED,
-        RAISE_MOVE_AUXILIARY,
-        RAISE_DONE,
-        HOME_WAIT_LIFT_REACHED,
-        HOME_MOVE_AUXILIARY,
-        HOME_DONE,
     };
 
     enum class HighPriorityAction {
@@ -159,26 +148,6 @@ protected:
     uint16_t last_gripper_button_code_   = LogF710_Key_IDLE;
     int64_t last_chassis_diag_ns_        = 0;
     bool suppress_remote_buttons_this_tick_ = false;
-    LiftAuxSequenceState lift_aux_sequence_state_ = LiftAuxSequenceState::IDLE;
-    float auxiliary_motor_target_angle_ = 0.0f;
-    float auxiliary_motor_smooth_angle_ = 0.0f;
-    float auxiliary_motor_profile_start_angle_ = 0.0f;
-    float auxiliary_motor_profile_target_angle_ = 0.0f;
-    float auxiliary_motor_profile_elapsed_ = 0.0f;
-    float auxiliary_motor_profile_duration_ = 0.0f;
-    float auxiliary_motor_profile_accel_time_ = 0.0f;
-    float auxiliary_motor_profile_decel_time_ = 0.0f;
-    float auxiliary_motor_profile_cruise_time_ = 0.0f;
-    float auxiliary_motor_profile_peak_speed_ = 0.0f;
-    float auxiliary_motor_profile_distance_ = 0.0f;
-    float auxiliary_motor_profile_direction_ = 1.0f;
-    float auxiliary_motor_target_omega_ = 0.0f;
-    float auxiliary_motor_hold_blend_ = 0.0f;
-    uint32_t auxiliary_motor_hold_ready_ticks_ = 0U;
-    bool auxiliary_motor_command_enable_ = false;
-    bool auxiliary_motor_profile_active_ = false;
-    bool auxiliary_motor_profile_initialized_ = false;
-    bool auxiliary_motor_hold_active_ = false;
 
     // 诊断：被 CAN_Rx_Callback 丢弃的未识别帧累计（通道/ID 都不匹配）
     std::atomic<uint64_t> unhandled_can_frames_{0};
@@ -202,18 +171,6 @@ protected:
     void _Update_Chassis_Remote_Gate(bool buttons_recent, uint16_t button_code);
     void _Update_Lift_Attitude_Yaw();
     void _Start_Stair_Down(float raise_angle);
-    void _Enable_Auxiliary_Motor();
-    void _Disable_Auxiliary_Motor();
-    void _Cancel_Lift_Aux_Sequence();
-    void _Start_Lift_Aux_Raise_Sequence();
-    void _Start_Lift_Aux_Home_Sequence();
-    void _Update_Lift_Aux_Sequence();
-    void _Reset_Auxiliary_Motor_Profile(float angle);
-    void _Start_Auxiliary_Motor_Profile(float target_angle);
-    float _Update_Auxiliary_Motor_Profile(float target_angle);
-    bool _Is_Auxiliary_Motor_Profile_At_Target() const;
-    void _Output_Auxiliary_Motor();
-    bool _Is_Auxiliary_Motor_Reached(float target_angle);
     void _Log_Chassis_Start_Gate(const char *msg);
     void _Log_Gripper_Action(const char *msg, bool ok);
     void _Log_Chassis_Diagnostic(bool ros_cmd_recent,
@@ -225,6 +182,10 @@ protected:
                                 bool cmd_disable_watchdog_alive,
                                 ChassisCommandSource source,
                                 int64_t now);
+    // 下台阶过程数据记录：BeginRun 在下台阶启动时调用，_Trace_Stair 每周期抽样写盘，
+    // 跑完(回 IDLE)自动 EndRun。仅记录下台阶（上台阶不触发）。
+    void _Trace_Stair();
+    bool stair_trace_run_active_ = false;
 
     // 启动期检查：同一通道内 DM_CAN_Rx_ID 不能重号
     void _Verify_Motor_ID_Uniqueness();

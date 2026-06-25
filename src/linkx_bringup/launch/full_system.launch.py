@@ -24,7 +24,7 @@ def generate_launch_description():
         'config', 'hipnuc_config.yaml')
 
     return LaunchDescription([
-        DeclareLaunchArgument('ifname', default_value='enp86s0'),
+        DeclareLaunchArgument('ifname', default_value='enp4s0'),
         DeclareLaunchArgument('start_vehicle_control', default_value='true'),
         DeclareLaunchArgument('start_gimbal_bridge', default_value='false'),
         DeclareLaunchArgument('vehicle_prefix', default_value=''),

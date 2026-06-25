@@ -18,9 +18,11 @@
 
 #include "robot.h"
 #include "chassis_trace_logger.h"
+#include "stair_trace_logger.h"
 
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <string>
 
 namespace
@@ -31,62 +33,10 @@ constexpr int64_t kButtonTimeoutNs = 500LL * 1000LL * 1000LL;  // 500 ms
 constexpr int kRosSpinRateHz = 1000;
 constexpr const char *kRosCmdTopic = "/chassis/cmd_vel";
 constexpr const char *kRemoteCmdTopic = "/chassis/remote_cmd_vel";
-constexpr float kManualBothLiftMotorRaiseAngle = -39.0f;
-constexpr float kManualBothLiftRetractAngle = -0.01f;
-constexpr float kAuxiliaryMotorRaisedAngle = 1.5f;
-constexpr float kAuxiliaryMotorHomeAngle = -0.05f;
-constexpr float kAuxiliaryMotorReachedTolerance = 0.05f;
-constexpr float kAuxiliaryMotorHomeReachedTolerance = 0.12f;
-constexpr float kAuxiliaryMotorControlDtS = 0.002f;
-
-// ---- 运动段：梯形速度规划（accel → cruise → decel），抬升/回零各一套限幅 ----
-constexpr float kAuxiliaryMotorProfileMaxSpeed = 5.8f;
-constexpr float kAuxiliaryMotorHomeProfileMaxSpeed = 4.0f;
-constexpr float kAuxiliaryMotorProfileMaxAccel = 22.0f;
-constexpr float kAuxiliaryMotorHomeProfileMaxAccel = 18.0f;
-constexpr float kAuxiliaryMotorProfileMaxDecel = 28.0f;
-constexpr float kAuxiliaryMotorHomeProfileMaxDecel = 28.0f;
-constexpr float kAuxiliaryMotorHomeProfileSnapDistance = 0.06f;
-
-// ---- 运动段 MIT 增益：跟随规划轨迹，偏软以保证平滑、不抖 ----
-constexpr float kAuxiliaryMotorMoveTorqueNm = 0.0f;
-constexpr float kAuxiliaryMotorMoveKp = 12.0f;
-constexpr float kAuxiliaryMotorMoveKd = 2.0f;
-constexpr float kAuxiliaryMotorHomeMoveKp = 14.0f;
-constexpr float kAuxiliaryMotorHomeMoveKd = 2.0f;
-
-// ---- 保持段：刚性 + 近临界阻尼 PD ----
-// kp 提供随偏差线性增大的恢复力矩（即“到位后的大扭矩”，最终被电机 7.8 N·m 上限钳位），
-// kd 抑制振荡，deadband 只在编码器量化噪声范围内关掉恢复力矩以免极限环抖动。
-// 抗冲击不再用“松手 + 纯阻尼(kp=0)”——那样没有平衡点，一碰就漂/震荡；
-// 改为始终用这套刚性 PD 主动把电机顶回目标角，碰撞/震动被自然抑制。
-// home(0.0) 处刚度从原来的 0 提升到与抬升位一致，解决“0.0 无保持力矩”的问题。
-// 调参：若仍有振荡，先增大 kd（上限 5.0），再适当下调 kp；kp 越大“到位扭矩”越硬。
-constexpr float kAuxiliaryMotorHoldTorqueNm = 0.0f;
-constexpr float kAuxiliaryMotorHoldKp = 20.0f;
-constexpr float kAuxiliaryMotorHoldKd = 2.0f;
-constexpr float kAuxiliaryMotorHoldDeadband = 0.015f;
-constexpr float kAuxiliaryMotorHomeHoldKp = 20.0f;
-constexpr float kAuxiliaryMotorHomeHoldKd = 2.0f;
-constexpr float kAuxiliaryMotorHomeHoldDeadband = 0.015f;
-
-// ---- 进入/退出保持的判据 ----
-constexpr float kAuxiliaryMotorHoldEnterTolerance = 0.04f;
-constexpr float kAuxiliaryMotorHomeHoldEnterTolerance = 0.12f;
-constexpr float kAuxiliaryMotorHoldEnterOmega = 0.25f;
-constexpr uint32_t kAuxiliaryMotorHoldEnterStableTicks = 25U;
-constexpr float kAuxiliaryMotorHoldExitTolerance = 0.20f;
-constexpr float kAuxiliaryMotorHoldGainRampTimeS = 0.25f;
-constexpr float kAuxiliaryMotorHomeHoldGainRampTimeS = 0.20f;
-constexpr uint8_t kAuxiliaryMotorCanChannel = 0U;
-constexpr uint8_t kAuxiliaryMotorRxId = 0x17U;
-constexpr uint8_t kAuxiliaryMotorTxId = 0x07U;
+// A/B 深台阶抬升电机角（保持原 -14.3 杆角行为：-14.3 * 3 = -42.9）。
+// 注：Up/Down 协同动作及辅助 0x07 电机的全部参数/实现已迁移到 crt_lift.cpp。
+constexpr float kStairDeepRaiseMotorAngle = -42.9f;
 constexpr size_t kHighPriorityActionQueueMax = 16U;
-
-bool Auxiliary_Is_Home_Target(float target_angle)
-{
-    return std::fabs(target_angle - kAuxiliaryMotorHomeAngle) <= 1e-3f;
-}
 }
 
 void Class_Robot::Init(linkx_t *__LinkX_Handler)
@@ -97,19 +47,8 @@ void Class_Robot::Init(linkx_t *__LinkX_Handler)
     Chassis.Init_Motor_Params();
     imu_heading_hold_.Init(MAX_OMNI_CHASSIS_OMEGA);
 
-    Lift.Init(LinkX_Handler);
+    Lift.Init(LinkX_Handler);   // 含辅助 0x07 电机的 Init/CAN/控制
     Gripper.Init(LinkX_Handler);
-    Auxiliary_Motor.Init(LinkX_Handler,
-                         kAuxiliaryMotorCanChannel,
-                         kAuxiliaryMotorRxId,
-                         kAuxiliaryMotorTxId,
-                         Motor_DM_Control_Method_NORMAL_MIT,
-                         12.5f,
-                         395.0f,
-                         7.8f,
-                         9.2f);
-    Auxiliary_Motor.Set_Use_FDCAN(true);
-    Auxiliary_Motor.Set_Force_Output_Without_Feedback(false);
 
     _Verify_Motor_ID_Uniqueness();
 }
@@ -124,13 +63,13 @@ void Class_Robot::Loop()
     _Lift_Control();
     Chassis.TIM_2ms_Control_PeriodElapsedCallback();
     Lift.TIM_2ms_Control_PeriodElapsedCallback();
+    _Trace_Stair();
 }
 
 void Class_Robot::TIM_100ms_Alive_PeriodElapsedCallback()
 {
     Chassis.TIM_100ms_Alive_PeriodElapsedCallback();
     Lift.TIM_100ms_Alive_PeriodElapsedCallback();
-    Auxiliary_Motor.TIM_Alive_PeriodElapsedCallback();
 }
 
 void Class_Robot::TIM_2ms_Calculate_PeriodElapsedCallback()
@@ -138,6 +77,7 @@ void Class_Robot::TIM_2ms_Calculate_PeriodElapsedCallback()
     Chassis.TIM_2ms_Resolution_PeriodElapsedCallback();
     Chassis.TIM_2ms_Control_PeriodElapsedCallback();
     Lift.TIM_2ms_Control_PeriodElapsedCallback();
+    _Trace_Stair();
 }
 
 void Class_Robot::TIM_1ms_Calculate_Callback()
@@ -328,14 +268,14 @@ void Class_Robot::_Enable_Vehicle_Control(const char *reason)
     chassis_remote_enabled_ = true;
     Lift.Set_Control_Type(CHARIOT_LIFT_CONTROL_ENABLE);
     Lift.Send_Enable_Burst();
-    _Enable_Auxiliary_Motor();
+    Lift.Enable_Auxiliary_Motor();
     _Log_Chassis_Start_Gate(reason);
 }
 
 void Class_Robot::_Disable_Vehicle_Control(const char *reason)
 {
     chassis_remote_enabled_ = false;
-    _Cancel_Lift_Aux_Sequence();
+    Lift.Cancel_Lift_Aux_Sequence();
     Lift.Stop_Stair_Auto();
     Lift.Set_Diff_Drive_Enable(false);
     Lift.Set_Target_Diff_Command(0.0f, 0.0f);
@@ -344,7 +284,7 @@ void Class_Robot::_Disable_Vehicle_Control(const char *reason)
     Chassis.Set_Target_Velocity_X(0.0f);
     Chassis.Set_Target_Velocity_Y(0.0f);
     Chassis.Set_Target_Omega(0.0f);
-    _Disable_Auxiliary_Motor();
+    Lift.Disable_Auxiliary_Motor();
 
     {
         std::lock_guard<std::mutex> lock(cmd_mtx_);
@@ -368,43 +308,43 @@ void Class_Robot::_Execute_High_Priority_Action(HighPriorityAction action)
             break;
 
         case HighPriorityAction::STAIR_UP_RAISE_8_0:
-            _Enable_Vehicle_Control("service action: vehicle enabled for stair UP raise_angle=-8.0");
-            _Cancel_Lift_Aux_Sequence();
-            Lift.Start_Stair_Up(-8.0f);
+            _Enable_Vehicle_Control("service action: vehicle enabled for stair UP raise_motor=-24.0");
+            Lift.Cancel_Lift_Aux_Sequence();
+            Lift.Start_Stair_Up(kLiftFrontRaiseMotorAngle);
             _Log_Chassis_Start_Gate("service /vehicle/stair/up_raise_8_0: stair UP auto start");
             break;
 
         case HighPriorityAction::STAIR_DOWN_RAISE_8_0:
-            _Enable_Vehicle_Control("service action: vehicle enabled for stair DOWN raise_angle=-8.0");
-            _Cancel_Lift_Aux_Sequence();
-            _Start_Stair_Down(-8.0f);
+            _Enable_Vehicle_Control("service action: vehicle enabled for stair DOWN raise_motor=-24.0");
+            Lift.Cancel_Lift_Aux_Sequence();
+            _Start_Stair_Down(kLiftFrontRaiseMotorAngle);
             _Log_Chassis_Start_Gate("service /vehicle/stair/down_raise_8_0: stair DOWN auto start");
             break;
 
         case HighPriorityAction::STAIR_UP_RAISE_14_3:
-            _Enable_Vehicle_Control("service action: vehicle enabled for stair UP raise_angle=-14.3");
-            _Cancel_Lift_Aux_Sequence();
-            Lift.Start_Stair_Up(-14.3f);
+            _Enable_Vehicle_Control("service action: vehicle enabled for stair UP raise_motor=-42.9");
+            Lift.Cancel_Lift_Aux_Sequence();
+            Lift.Start_Stair_Up(kStairDeepRaiseMotorAngle);
             _Log_Chassis_Start_Gate("service /vehicle/stair/up_raise_14_3: stair UP auto start");
             break;
 
         case HighPriorityAction::STAIR_DOWN_RAISE_14_3:
-            _Enable_Vehicle_Control("service action: vehicle enabled for stair DOWN raise_angle=-14.3");
-            _Cancel_Lift_Aux_Sequence();
-            _Start_Stair_Down(-14.3f);
+            _Enable_Vehicle_Control("service action: vehicle enabled for stair DOWN raise_motor=-42.9");
+            Lift.Cancel_Lift_Aux_Sequence();
+            _Start_Stair_Down(kStairDeepRaiseMotorAngle);
             _Log_Chassis_Start_Gate("service /vehicle/stair/down_raise_14_3: stair DOWN auto start");
             break;
 
         case HighPriorityAction::LIFT_AUX_RAISE:
             _Enable_Vehicle_Control("service action: vehicle enabled for lift+aux raise");
-            _Start_Lift_Aux_Raise_Sequence();
-            _Log_Chassis_Start_Gate("service /vehicle/lift_aux/raise: lift target=-39.0, then aux 0x07 target=1.5");
+            Lift.Start_Lift_Aux_Raise_Sequence();
+            _Log_Chassis_Start_Gate("service /vehicle/lift_aux/raise: lift raise motor front=-39.0/rear=39.0, then aux 0x07 target=1.5");
             break;
 
         case HighPriorityAction::LIFT_AUX_HOME:
             _Enable_Vehicle_Control("service action: vehicle enabled for lift+aux home");
-            _Start_Lift_Aux_Home_Sequence();
-            _Log_Chassis_Start_Gate("service /vehicle/lift_aux/home: aux 0x07 target=-0.05, then lift target=-0.01");
+            Lift.Start_Lift_Aux_Home_Sequence();
+            _Log_Chassis_Start_Gate("service /vehicle/lift_aux/home: aux 0x07 target=-0.05, then lift retract motor front=-0.03/rear=0.03");
             break;
 
         case HighPriorityAction::GRIPPER_GRAB: {
@@ -520,13 +460,8 @@ void Class_Robot::CAN_Rx_Callback(uint8_t CAN_Channel, uint32_t CAN_ID, uint8_t 
         case 0: {
             const int indices[] = {1, 2};
             handled = dispatch_wheel(indices, 2);
-            if (!handled)
+            if (!handled)  // 含辅助 0x07 电机（Rx 0x17）的反馈分发
                 handled = Lift.CAN_Rx_Callback(CAN_Channel, CAN_ID, CAN_Data, CAN_Dlen);
-            if (!handled && can_id_std == Auxiliary_Motor.DM_CAN_Rx_ID)
-            {
-                Auxiliary_Motor.CAN_RxCpltCallback(CAN_Data);
-                handled = true;
-            }
             break;
         }
         case 1: {
@@ -703,408 +638,8 @@ void Class_Robot::_Start_Stair_Down(float raise_angle)
 {
     _Update_Lift_Attitude_Yaw();
     Lift.Start_Stair_Down(raise_angle);
-}
-
-void Class_Robot::_Enable_Auxiliary_Motor()
-{
-    lift_aux_sequence_state_ = LiftAuxSequenceState::IDLE;
-    auxiliary_motor_target_angle_ = kAuxiliaryMotorHomeAngle;
-    auxiliary_motor_command_enable_ = true;
-    auxiliary_motor_profile_initialized_ = false;
-    auxiliary_motor_hold_active_ = false;
-    auxiliary_motor_hold_blend_ = 0.0f;
-    auxiliary_motor_hold_ready_ticks_ = 0U;
-    Auxiliary_Motor.CAN_Send_Enter();
-}
-
-void Class_Robot::_Disable_Auxiliary_Motor()
-{
-    _Cancel_Lift_Aux_Sequence();
-    auxiliary_motor_profile_initialized_ = false;
-    auxiliary_motor_profile_active_ = false;
-    auxiliary_motor_hold_active_ = false;
-    auxiliary_motor_hold_blend_ = 0.0f;
-    auxiliary_motor_hold_ready_ticks_ = 0U;
-    Auxiliary_Motor.Set_Control_Status(Motor_DM_Status_DISABLE);
-    Auxiliary_Motor.Set_Control_Maintain_Postion(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
-    Auxiliary_Motor.CAN_Send_Exit();
-}
-
-void Class_Robot::_Cancel_Lift_Aux_Sequence()
-{
-    lift_aux_sequence_state_ = LiftAuxSequenceState::IDLE;
-    if (chassis_remote_enabled_)
-    {
-        auxiliary_motor_target_angle_ = kAuxiliaryMotorHomeAngle;
-        auxiliary_motor_command_enable_ = true;
-    }
-    else
-    {
-        auxiliary_motor_command_enable_ = false;
-    }
-}
-
-void Class_Robot::_Start_Lift_Aux_Raise_Sequence()
-{
-    Lift.Set_Both_Lift_Raise_By_Motor_Angle(kManualBothLiftMotorRaiseAngle);
-    auxiliary_motor_target_angle_ = kAuxiliaryMotorHomeAngle;
-    auxiliary_motor_command_enable_ = true;
-    lift_aux_sequence_state_ = LiftAuxSequenceState::RAISE_WAIT_LIFT_REACHED;
-}
-
-void Class_Robot::_Start_Lift_Aux_Home_Sequence()
-{
-    Lift.Stop_Stair_Auto();
-    auxiliary_motor_target_angle_ = kAuxiliaryMotorHomeAngle;
-    auxiliary_motor_command_enable_ = true;
-    lift_aux_sequence_state_ = LiftAuxSequenceState::HOME_MOVE_AUXILIARY;
-}
-
-void Class_Robot::_Update_Lift_Aux_Sequence()
-{
-    switch (lift_aux_sequence_state_)
-    {
-        case LiftAuxSequenceState::RAISE_WAIT_LIFT_REACHED:
-            if (Lift.Are_Both_Lifts_Reached(CHARIOT_LIFT_POSITION_RAISE))
-            {
-                auxiliary_motor_target_angle_ = kAuxiliaryMotorRaisedAngle;
-                auxiliary_motor_command_enable_ = true;
-                lift_aux_sequence_state_ = LiftAuxSequenceState::RAISE_MOVE_AUXILIARY;
-            }
-            break;
-
-        case LiftAuxSequenceState::RAISE_MOVE_AUXILIARY:
-            if (_Is_Auxiliary_Motor_Reached(kAuxiliaryMotorRaisedAngle))
-                lift_aux_sequence_state_ = LiftAuxSequenceState::RAISE_DONE;
-            break;
-
-        case LiftAuxSequenceState::HOME_WAIT_LIFT_REACHED:
-            if (Lift.Are_Both_Lifts_Reached(CHARIOT_LIFT_POSITION_RETRACT))
-                lift_aux_sequence_state_ = LiftAuxSequenceState::HOME_DONE;
-            break;
-
-        case LiftAuxSequenceState::HOME_MOVE_AUXILIARY:
-            if (_Is_Auxiliary_Motor_Reached(kAuxiliaryMotorHomeAngle))
-            {
-                Lift.Set_Both_Lift_Retract_To(kManualBothLiftRetractAngle);
-                lift_aux_sequence_state_ = LiftAuxSequenceState::HOME_WAIT_LIFT_REACHED;
-            }
-            break;
-
-        case LiftAuxSequenceState::RAISE_DONE:
-        case LiftAuxSequenceState::HOME_DONE:
-        case LiftAuxSequenceState::IDLE:
-        default:
-            break;
-    }
-
-    _Output_Auxiliary_Motor();
-}
-
-void Class_Robot::_Reset_Auxiliary_Motor_Profile(float angle)
-{
-    auxiliary_motor_smooth_angle_ = angle;
-    auxiliary_motor_profile_start_angle_ = angle;
-    auxiliary_motor_profile_target_angle_ = angle;
-    auxiliary_motor_profile_elapsed_ = 0.0f;
-    auxiliary_motor_profile_duration_ = 0.0f;
-    auxiliary_motor_profile_accel_time_ = 0.0f;
-    auxiliary_motor_profile_decel_time_ = 0.0f;
-    auxiliary_motor_profile_cruise_time_ = 0.0f;
-    auxiliary_motor_profile_peak_speed_ = 0.0f;
-    auxiliary_motor_profile_distance_ = 0.0f;
-    auxiliary_motor_profile_direction_ = 1.0f;
-    auxiliary_motor_target_omega_ = 0.0f;
-    auxiliary_motor_profile_active_ = false;
-    auxiliary_motor_profile_initialized_ = true;
-    auxiliary_motor_hold_active_ = false;
-    auxiliary_motor_hold_blend_ = 0.0f;
-    auxiliary_motor_hold_ready_ticks_ = 0U;
-}
-
-void Class_Robot::_Start_Auxiliary_Motor_Profile(float target_angle)
-{
-    const float start_angle = auxiliary_motor_smooth_angle_;
-    const float distance = target_angle - start_angle;
-    const float abs_distance = std::fabs(distance);
-    const bool home_target = Auxiliary_Is_Home_Target(target_angle);
-    const float max_speed = home_target ?
-        kAuxiliaryMotorHomeProfileMaxSpeed :
-        kAuxiliaryMotorProfileMaxSpeed;
-    const float safe_peak_speed =
-        (max_speed > 0.05f) ? max_speed : 0.05f;
-    const float max_accel = home_target ?
-        kAuxiliaryMotorHomeProfileMaxAccel :
-        kAuxiliaryMotorProfileMaxAccel;
-    const float max_decel = home_target ?
-        kAuxiliaryMotorHomeProfileMaxDecel :
-        kAuxiliaryMotorProfileMaxDecel;
-    const float safe_peak_accel =
-        (max_accel > 0.5f) ? max_accel : 0.5f;
-    const float safe_peak_decel =
-        (max_decel > 0.5f) ? max_decel : 0.5f;
-
-    auxiliary_motor_profile_start_angle_ = start_angle;
-    auxiliary_motor_profile_target_angle_ = target_angle;
-    auxiliary_motor_profile_elapsed_ = 0.0f;
-    auxiliary_motor_profile_distance_ = abs_distance;
-    auxiliary_motor_profile_direction_ = (distance >= 0.0f) ? 1.0f : -1.0f;
-
-    const float accel_time_to_max = safe_peak_speed / safe_peak_accel;
-    const float decel_time_to_max = safe_peak_speed / safe_peak_decel;
-    const float accel_decel_distance_to_max =
-        0.5f * safe_peak_speed * safe_peak_speed *
-        ((1.0f / safe_peak_accel) + (1.0f / safe_peak_decel));
-    if (abs_distance <= accel_decel_distance_to_max)
-    {
-        auxiliary_motor_profile_peak_speed_ =
-            std::sqrt((2.0f * abs_distance * safe_peak_accel * safe_peak_decel) /
-                      (safe_peak_accel + safe_peak_decel));
-        auxiliary_motor_profile_accel_time_ =
-            auxiliary_motor_profile_peak_speed_ / safe_peak_accel;
-        auxiliary_motor_profile_decel_time_ =
-            auxiliary_motor_profile_peak_speed_ / safe_peak_decel;
-        auxiliary_motor_profile_cruise_time_ = 0.0f;
-    }
-    else
-    {
-        auxiliary_motor_profile_peak_speed_ = safe_peak_speed;
-        auxiliary_motor_profile_accel_time_ = accel_time_to_max;
-        auxiliary_motor_profile_decel_time_ = decel_time_to_max;
-        auxiliary_motor_profile_cruise_time_ =
-            (abs_distance - accel_decel_distance_to_max) / safe_peak_speed;
-    }
-
-    auxiliary_motor_profile_duration_ =
-        auxiliary_motor_profile_accel_time_ +
-        auxiliary_motor_profile_decel_time_ +
-        auxiliary_motor_profile_cruise_time_;
-    auxiliary_motor_target_omega_ = 0.0f;
-    auxiliary_motor_profile_active_ = auxiliary_motor_profile_duration_ > 1e-4f;
-    auxiliary_motor_hold_active_ = false;
-    auxiliary_motor_hold_blend_ = 0.0f;
-    auxiliary_motor_hold_ready_ticks_ = 0U;
-
-    if (!auxiliary_motor_profile_active_)
-        _Reset_Auxiliary_Motor_Profile(target_angle);
-}
-
-float Class_Robot::_Update_Auxiliary_Motor_Profile(float target_angle)
-{
-    if (!auxiliary_motor_profile_initialized_)
-        _Reset_Auxiliary_Motor_Profile(Auxiliary_Motor.Get_Now_Radian());
-
-    if (std::fabs(target_angle - auxiliary_motor_profile_target_angle_) > 1e-4f)
-        _Start_Auxiliary_Motor_Profile(target_angle);
-
-    if (!auxiliary_motor_profile_active_)
-    {
-        auxiliary_motor_smooth_angle_ = target_angle;
-        auxiliary_motor_target_omega_ = 0.0f;
-        return auxiliary_motor_target_omega_;
-    }
-
-    auxiliary_motor_profile_elapsed_ += kAuxiliaryMotorControlDtS;
-
-    if (auxiliary_motor_profile_elapsed_ >= auxiliary_motor_profile_duration_)
-    {
-        auxiliary_motor_smooth_angle_ = auxiliary_motor_profile_target_angle_;
-        auxiliary_motor_target_omega_ = 0.0f;
-        auxiliary_motor_profile_active_ = false;
-        return auxiliary_motor_target_omega_;
-    }
-
-    const float accel_time = auxiliary_motor_profile_accel_time_;
-    const float decel_time = auxiliary_motor_profile_decel_time_;
-    const float cruise_time = auxiliary_motor_profile_cruise_time_;
-    const float peak_speed = auxiliary_motor_profile_peak_speed_;
-    const float accel = (accel_time > 1e-5f) ? (peak_speed / accel_time) : 0.0f;
-    const float decel = (decel_time > 1e-5f) ? (peak_speed / decel_time) : 0.0f;
-    const float accel_distance = 0.5f * accel * accel_time * accel_time;
-    const float cruise_distance = peak_speed * cruise_time;
-    float profile_distance = 0.0f;
-    float profile_speed = 0.0f;
-
-    if (auxiliary_motor_profile_elapsed_ < accel_time)
-    {
-        const float t = auxiliary_motor_profile_elapsed_;
-        profile_distance = 0.5f * accel * t * t;
-        profile_speed = accel * t;
-    }
-    else if (auxiliary_motor_profile_elapsed_ < accel_time + cruise_time)
-    {
-        const float t = auxiliary_motor_profile_elapsed_ - accel_time;
-        profile_distance = accel_distance + peak_speed * t;
-        profile_speed = peak_speed;
-    }
-    else
-    {
-        const float t = auxiliary_motor_profile_elapsed_ - accel_time - cruise_time;
-        profile_distance =
-            accel_distance +
-            cruise_distance +
-            peak_speed * t -
-            0.5f * decel * t * t;
-        profile_speed = peak_speed - decel * t;
-        if (profile_speed < 0.0f)
-            profile_speed = 0.0f;
-    }
-
-    if (profile_distance > auxiliary_motor_profile_distance_)
-        profile_distance = auxiliary_motor_profile_distance_;
-
-    const float remaining_distance =
-        auxiliary_motor_profile_distance_ - profile_distance;
-    if (Auxiliary_Is_Home_Target(auxiliary_motor_profile_target_angle_) &&
-        remaining_distance <= kAuxiliaryMotorHomeProfileSnapDistance)
-    {
-        auxiliary_motor_smooth_angle_ = auxiliary_motor_profile_target_angle_;
-        auxiliary_motor_target_omega_ = 0.0f;
-        auxiliary_motor_profile_active_ = false;
-        return auxiliary_motor_target_omega_;
-    }
-
-    auxiliary_motor_smooth_angle_ =
-        auxiliary_motor_profile_start_angle_ +
-        auxiliary_motor_profile_direction_ * profile_distance;
-    auxiliary_motor_target_omega_ =
-        auxiliary_motor_profile_direction_ * profile_speed;
-    return auxiliary_motor_target_omega_;
-}
-
-bool Class_Robot::_Is_Auxiliary_Motor_Profile_At_Target() const
-{
-    return auxiliary_motor_profile_initialized_ &&
-           !auxiliary_motor_profile_active_ &&
-           std::fabs(auxiliary_motor_smooth_angle_ - auxiliary_motor_target_angle_) <= 1e-4f;
-}
-
-void Class_Robot::_Output_Auxiliary_Motor()
-{
-    if (!auxiliary_motor_command_enable_)
-        return;
-
-    if (Auxiliary_Motor.Get_Status() != Motor_DM_Status_ENABLE)
-    {
-        auxiliary_motor_profile_initialized_ = false;
-        auxiliary_motor_hold_active_ = false;
-        auxiliary_motor_hold_blend_ = 0.0f;
-        auxiliary_motor_hold_ready_ticks_ = 0U;
-        Auxiliary_Motor.CAN_Send_Enter();
-        Auxiliary_Motor.TIM_Send_PeriodElapsedCallback();
-        return;
-    }
-
-    // 1) 运动段：梯形速度规划生成平滑目标角 + 前馈角速度
-    const float target_omega =
-        _Update_Auxiliary_Motor_Profile(auxiliary_motor_target_angle_);
-    const bool home_target = Auxiliary_Is_Home_Target(auxiliary_motor_target_angle_);
-    const float now_angle = Auxiliary_Motor.Get_Now_Radian();
-    const float feedback_error = std::fabs(now_angle - auxiliary_motor_target_angle_);
-    const float feedback_omega = std::fabs(Auxiliary_Motor.Get_Now_Omega());
-
-    // 2) 保持段状态机：规划到位且稳定 → 进入保持；被外力推出退出阈值 → 退回规划平滑滑回。
-    //    不再有 impact / home / settling 等“松手纯阻尼”分支——抗冲击交给保持段的刚性 PD。
-    const float hold_enter_tolerance = home_target ?
-        kAuxiliaryMotorHomeHoldEnterTolerance :
-        kAuxiliaryMotorHoldEnterTolerance;
-
-    if (auxiliary_motor_hold_active_ &&
-        feedback_error > kAuxiliaryMotorHoldExitTolerance)
-    {
-        auxiliary_motor_hold_active_ = false;
-        auxiliary_motor_hold_blend_ = 0.0f;
-        auxiliary_motor_hold_ready_ticks_ = 0U;
-    }
-
-    if (!auxiliary_motor_hold_active_)
-    {
-        if (_Is_Auxiliary_Motor_Profile_At_Target() &&
-            feedback_error <= hold_enter_tolerance &&
-            feedback_omega <= kAuxiliaryMotorHoldEnterOmega)
-        {
-            if (auxiliary_motor_hold_ready_ticks_ < kAuxiliaryMotorHoldEnterStableTicks)
-                ++auxiliary_motor_hold_ready_ticks_;
-        }
-        else
-        {
-            auxiliary_motor_hold_ready_ticks_ = 0U;
-        }
-
-        if (auxiliary_motor_hold_ready_ticks_ >= kAuxiliaryMotorHoldEnterStableTicks)
-        {
-            auxiliary_motor_hold_active_ = true;
-            auxiliary_motor_hold_blend_ = 0.0f;
-        }
-    }
-
-    // 3) 增益选择
-    const float move_kp = home_target ? kAuxiliaryMotorHomeMoveKp : kAuxiliaryMotorMoveKp;
-    const float move_kd = home_target ? kAuxiliaryMotorHomeMoveKd : kAuxiliaryMotorMoveKd;
-
-    float control_angle;
-    float control_omega;
-    float control_torque;
-    float control_kp;
-    float control_kd;
-
-    if (auxiliary_motor_hold_active_)
-    {
-        // move → hold 增益渐变，避免切入瞬间的力矩台阶
-        const float hold_kp = home_target ? kAuxiliaryMotorHomeHoldKp : kAuxiliaryMotorHoldKp;
-        const float hold_kd = home_target ? kAuxiliaryMotorHomeHoldKd : kAuxiliaryMotorHoldKd;
-        const float hold_deadband = home_target ?
-            kAuxiliaryMotorHomeHoldDeadband : kAuxiliaryMotorHoldDeadband;
-        const float hold_gain_ramp_time = home_target ?
-            kAuxiliaryMotorHomeHoldGainRampTimeS : kAuxiliaryMotorHoldGainRampTimeS;
-        const float blend_step = (hold_gain_ramp_time > 1e-4f) ?
-            (kAuxiliaryMotorControlDtS / hold_gain_ramp_time) : 1.0f;
-        auxiliary_motor_hold_blend_ =
-            std::fmin(1.0f, auxiliary_motor_hold_blend_ + blend_step);
-
-        const float blend = auxiliary_motor_hold_blend_;
-        const float target_error = auxiliary_motor_target_angle_ - now_angle;
-
-        // deadband 内：锁定当前角、不施加恢复力矩，避免编码器量化噪声引起的极限环抖动。
-        // deadband 外：锁定到固定目标角，由 kp 生成正比于偏差的恢复力矩（到位/0.0 处的“大扭矩”），
-        //              震动/碰撞会被这套刚性 PD 主动顶回，而不是漂走。
-        control_angle = (std::fabs(target_error) <= hold_deadband) ?
-            now_angle : auxiliary_motor_target_angle_;
-        control_omega = 0.0f;
-        control_torque = kAuxiliaryMotorHoldTorqueNm;
-        control_kp = move_kp + blend * (hold_kp - move_kp);
-        control_kd = move_kd + blend * (hold_kd - move_kd);
-    }
-    else
-    {
-        // 运动段：跟随规划轨迹（偏软增益 + 角速度前馈），又快又平滑地逼近目标
-        auxiliary_motor_hold_blend_ = 0.0f;
-        control_angle = auxiliary_motor_smooth_angle_;
-        control_omega = target_omega;
-        control_torque = kAuxiliaryMotorMoveTorqueNm;
-        control_kp = move_kp;
-        control_kd = move_kd;
-    }
-
-    Auxiliary_Motor.Set_Control_Maintain_Postion(
-        control_angle,
-        control_omega,
-        control_torque,
-        control_kp,
-        control_kd);
-    Auxiliary_Motor.TIM_Send_PeriodElapsedCallback();
-}
-
-bool Class_Robot::_Is_Auxiliary_Motor_Reached(float target_angle)
-{
-    const float reached_tolerance = Auxiliary_Is_Home_Target(target_angle) ?
-        kAuxiliaryMotorHomeReachedTolerance :
-        kAuxiliaryMotorReachedTolerance;
-    return Auxiliary_Motor.Get_Status() == Motor_DM_Status_ENABLE &&
-           _Is_Auxiliary_Motor_Profile_At_Target() &&
-           auxiliary_motor_hold_active_ &&
-           std::fabs(Auxiliary_Motor.Get_Now_Radian() - target_angle) <=
-               reached_tolerance;
+    stair_trace::BeginRun();          // 每次下台阶开一个独立 CSV
+    stair_trace_run_active_ = true;
 }
 
 void Class_Robot::_Log_Chassis_Start_Gate(const char *msg)
@@ -1172,6 +707,59 @@ void Class_Robot::_Trace_Chassis_Command(const Ros_Command &snapshot,
     chassis_trace::Record(sample);
 }
 
+void Class_Robot::_Trace_Stair()
+{
+    // 只在一次下台阶运行内记录；状态机回到 IDLE/ABORT 即收尾。
+    if (!stair_trace_run_active_)
+        return;
+
+    if (!Lift.Is_Stair_Auto_Active())
+    {
+        stair_trace::EndRun();
+        stair_trace_run_active_ = false;
+        return;
+    }
+
+    stair_trace::Sample s;
+    s.now_ns = now_ns();
+    s.stair_state = static_cast<int>(Lift.Get_Stair_State());
+    const char *name = Lift.Get_Stair_State_Name();
+    std::snprintf(s.stair_state_name, sizeof(s.stair_state_name), "%s", name ? name : "");
+
+    s.attitude_yaw_valid = Lift.Get_Stair_Attitude_Yaw_Valid() ? 1 : 0;
+    s.attitude_target_valid = Lift.Get_Stair_Attitude_Target_Valid() ? 1 : 0;
+    s.imu_yaw_rad = Lift.Get_Stair_Attitude_Yaw();
+    s.target_yaw_rad = Lift.Get_Stair_Attitude_Target_Yaw();
+    s.yaw_error_rad = Lift.Get_Stair_Yaw_Error();
+    s.yaw_error_deg = s.yaw_error_rad * 180.0f / static_cast<float>(M_PI);
+
+    s.stair_chassis_forward = Lift.Get_Stair_Chassis_Forward();
+    s.stair_chassis_omega = Lift.Get_Stair_Chassis_Omega();
+    s.diff_drive_enable = Lift.Get_Diff_Drive_Enable() ? 1 : 0;
+    s.target_diff_forward = Lift.Get_Target_Diff_Forward();
+    s.target_diff_yaw = Lift.Get_Target_Diff_Yaw();
+
+    s.tof_down_front_cm = Lift.Get_ToF_Distance_Cm(CHARIOT_LIFT_TOF_DOWN_FRONT);
+    s.tof_down_back_cm = Lift.Get_ToF_Distance_Cm(CHARIOT_LIFT_TOF_DOWN_BACK);
+
+    for (int i = 0; i < stair_trace::kModuleCount; ++i)
+    {
+        const auto module = static_cast<Enum_Chariot_Lift_Module>(i);
+        stair_trace::ModuleTrace &m = s.modules[i];
+        m.target_left_omega = Lift.Get_Target_Left_Omega(module);
+        m.target_right_omega = Lift.Get_Target_Right_Omega(module);
+        m.now_left_omega = Lift.Motor_Drive_Left[i].Get_Now_Omega();
+        m.now_right_omega = Lift.Motor_Drive_Right[i].Get_Now_Omega();
+        m.now_left_torque = Lift.Motor_Drive_Left[i].Get_Now_Torque();
+        m.now_right_torque = Lift.Motor_Drive_Right[i].Get_Now_Torque();
+        m.lift_motor_radian = Lift.Motor_Lift[i].Get_Now_Radian();
+        m.lift_now_torque = Lift.Motor_Lift[i].Get_Now_Torque();
+        m.lift_status = static_cast<int>(Lift.Motor_Lift[i].Get_Status());
+    }
+
+    stair_trace::Record(s);
+}
+
 void Class_Robot::_Log_Chassis_Diagnostic(bool ros_cmd_recent,
                                           bool remote_cmd_recent,
                                           ChassisCommandSource source)
@@ -1201,7 +789,7 @@ void Class_Robot::_Lift_Control()
 
     if (!chassis_remote_enabled_)
     {
-        _Cancel_Lift_Aux_Sequence();
+        Lift.Cancel_Lift_Aux_Sequence();
         Lift.Stop_Stair_Auto();
         Lift.Set_Diff_Drive_Enable(false);
         Lift.Set_Target_Diff_Command(0.0f, 0.0f);
@@ -1255,37 +843,37 @@ void Class_Robot::_Lift_Control()
 
         if (x_rising)
         {
-            _Cancel_Lift_Aux_Sequence();
-            Lift.Start_Stair_Up(-8.0f);
-            log_lift_action("X pressed: stair UP auto start, raise_angle=-8.0");
+            Lift.Cancel_Lift_Aux_Sequence();
+            Lift.Start_Stair_Up(kLiftFrontRaiseMotorAngle);
+            log_lift_action("X pressed: stair UP auto start, raise_motor=-24.0");
         }
         else if (y_rising)
         {
-            _Cancel_Lift_Aux_Sequence();
-            _Start_Stair_Down(-8.0f);
-            log_lift_action("Y pressed: stair DOWN auto start, raise_angle=-8.0");
+            Lift.Cancel_Lift_Aux_Sequence();
+            _Start_Stair_Down(kLiftFrontRaiseMotorAngle);
+            log_lift_action("Y pressed: stair DOWN auto start, raise_motor=-24.0");
         }
         else if (a_rising)
         {
-            _Cancel_Lift_Aux_Sequence();
-            Lift.Start_Stair_Up(-14.3f);
-            log_lift_action("A pressed: stair UP auto start, raise_angle=-14.3");
+            Lift.Cancel_Lift_Aux_Sequence();
+            Lift.Start_Stair_Up(kStairDeepRaiseMotorAngle);
+            log_lift_action("A pressed: stair UP auto start, raise_motor=-42.9");
         }
         else if (b_rising)
         {
-            _Cancel_Lift_Aux_Sequence();
-            _Start_Stair_Down(-14.3f);
-            log_lift_action("B pressed: stair DOWN auto start, raise_angle=-14.3");
+            Lift.Cancel_Lift_Aux_Sequence();
+            _Start_Stair_Down(kStairDeepRaiseMotorAngle);
+            log_lift_action("B pressed: stair DOWN auto start, raise_motor=-42.9");
         }
         else if (up_rising)
         {
-            _Start_Lift_Aux_Home_Sequence();
-            log_lift_action("Up pressed: aux 0x07 target=-0.05, then lift target=-0.01");
+            Lift.Start_Lift_Aux_Home_Sequence();
+            log_lift_action("Up pressed: aux 0x07 target=-0.05, then lift retract motor front=-0.03/rear=0.03");
         }
         else if (down_rising)
         {
-            _Start_Lift_Aux_Raise_Sequence();
-            log_lift_action("Down pressed: lift motor target=-39.0, then aux 0x07 target=1.5");
+            Lift.Start_Lift_Aux_Raise_Sequence();
+            log_lift_action("Down pressed: lift raise motor front=-39.0/rear=39.0, then aux 0x07 target=1.5");
         }
 
         last_lift_button_code_ = snapshot.button_code;
@@ -1296,7 +884,7 @@ void Class_Robot::_Lift_Control()
         last_gripper_button_code_ = LogF710_Key_IDLE;
     }
 
-    _Update_Lift_Aux_Sequence();
+    Lift.TIM_1ms_Aux_PeriodElapsedCallback();
 
     if (Lift.Is_Stair_Auto_Active())
     {

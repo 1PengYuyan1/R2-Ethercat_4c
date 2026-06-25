@@ -72,6 +72,7 @@ std::array<float, OMNI_WHEEL_NUM> st_measured_accel {};
 struct Options
 {
     std::string ifname = "enp86s0";
+    int slave_id = 2;
     float speed_mps = 0.35f;
     float duration_s = 5.0f;
     float settle_s = 1.0f;
@@ -82,6 +83,17 @@ struct Options
     float reach_hold_s = 0.05f;
     int sample_hz = 100;
     std::string directions = "all";
+    bool has_ff_scale_override = false;
+    std::array<float, OMNI_WHEEL_NUM> ff_scale_override {};
+    bool has_correction_override = false;
+    std::array<float, OMNI_WHEEL_NUM> correction_override {};
+    bool has_kd_override_list = false;
+    std::array<float, OMNI_WHEEL_NUM> kd_override_list {};
+    bool has_kd_override = false;
+    float kd_override = 0.0f;
+    bool has_direction_override = false;
+    std::array<float, OMNI_WHEEL_NUM> direction_override {};
+    float breakaway_scale = 1.0f;
     std::string csv_path;
     std::string summary_path;
 };
@@ -230,6 +242,7 @@ void print_usage(const char *argv0)
         << "  sudo IFNAME=enp86s0 " << argv0 << " [options]\n\n"
         << "Options:\n"
         << "  --ifname IFACE           EtherCAT NIC, default IFNAME env or enp86s0\n"
+        << "  --slave-id N             LinkX EtherCAT slave carrying wheel motors, default R2_MOTOR_SLAVE env or 2\n"
         << "  --speed MPS             straight command speed, default 0.35\n"
         << "  --duration SEC          command duration per segment, default 5.0\n"
         << "  --settle SEC            zero-command settle time before each segment, default 1.0\n"
@@ -240,6 +253,12 @@ void print_usage(const char *argv0)
         << "  --reach-hold SEC       wheel threshold hold time, default 0.05\n"
         << "  --sample-hz HZ          CSV sample rate, default 100\n"
         << "  --directions LIST       all or comma list: x+,x-,y+,y-\n"
+        << "  --kd K                  override MIT Kd for all wheels\n"
+        << "  --kds LIST              override per-wheel MIT Kd, e.g. 3,3,3,3\n"
+        << "  --wheel-directions LIST override wheel direction signs, e.g. 1,1,-1,-1\n"
+        << "  --corrections LIST      override per-wheel speed corrections\n"
+        << "  --ff-scales LIST        override per-wheel feedforward scales\n"
+        << "  --breakaway-scale S     multiply all wheel breakaway torques, default 1\n"
         << "  --csv PATH              CSV output path\n"
         << "  --summary PATH          summary output path\n";
 }
@@ -255,6 +274,40 @@ std::vector<std::string> split_csv(const std::string &text)
             out.push_back(item);
     }
     return out;
+}
+
+bool parse_float_array4(const std::string &text, std::array<float, OMNI_WHEEL_NUM> &out)
+{
+    const auto items = split_csv(text);
+    if (items.size() != OMNI_WHEEL_NUM)
+        return false;
+
+    for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
+    {
+        char *end = nullptr;
+        const float v = std::strtof(items[i].c_str(), &end);
+        if (end == items[i].c_str() || !std::isfinite(v) || v < 0.0f)
+            return false;
+        out[i] = v;
+    }
+    return true;
+}
+
+bool parse_direction_array4(const std::string &text, std::array<float, OMNI_WHEEL_NUM> &out)
+{
+    const auto items = split_csv(text);
+    if (items.size() != OMNI_WHEEL_NUM)
+        return false;
+
+    for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
+    {
+        char *end = nullptr;
+        const float v = std::strtof(items[i].c_str(), &end);
+        if (end == items[i].c_str() || !std::isfinite(v) || std::fabs(v) < 0.5f)
+            return false;
+        out[i] = (v < 0.0f) ? -1.0f : 1.0f;
+    }
+    return true;
 }
 
 std::vector<Segment> make_segments(const Options &opt)
@@ -645,7 +698,8 @@ void write_summary(const Options &opt, const std::vector<SegmentResult> &results
        << " startup_window_s=" << opt.startup_window_s
        << " reach_frac=" << opt.reach_frac
        << " reach_abs_tol=" << opt.reach_abs_tol
-       << " reach_hold_s=" << opt.reach_hold_s << "\n\n";
+       << " reach_hold_s=" << opt.reach_hold_s
+       << " breakaway_scale=" << opt.breakaway_scale << "\n\n";
 
     os << "Current wheel params:\n";
     for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
@@ -768,7 +822,7 @@ void disable_all(uint32_t &tick)
     }
 }
 
-bool init_ethercat_linkx(const std::string &ifname)
+bool init_ethercat_linkx(const std::string &ifname, int slave_id)
 {
     if (!ecat_master_init(&st_master, ifname.c_str()))
     {
@@ -776,7 +830,14 @@ bool init_ethercat_linkx(const std::string &ifname)
         return false;
     }
 
-    linkx_init(&st_linkx, 1, &st_master.ctx);
+    if (slave_id > st_master.ctx.slavecount)
+    {
+        std::cerr << "[OMNI-REC] requested slave-id " << slave_id
+                  << " but only " << st_master.ctx.slavecount << " slave(s) found\n";
+        return false;
+    }
+
+    linkx_init(&st_linkx, static_cast<uint32_t>(slave_id), &st_master.ctx);
 
     for (int ch = 0; ch < kChannelCount; ++ch)
         linkx_switch_can_channel(&st_linkx, static_cast<uint8_t>(ch), true);
@@ -810,6 +871,8 @@ Options parse_options(int argc, char **argv)
         opt.ifname = env;
 
     opt.ifname = cli_get(argc, argv, "ifname", opt.ifname.c_str());
+    opt.slave_id = std::atoi(cli_get(argc, argv, "slave-id",
+                                     std::to_string(env_i("R2_MOTOR_SLAVE", opt.slave_id)).c_str()));
     opt.speed_mps = std::strtof(cli_get(argc, argv, "speed",
                                         std::to_string(env_f("OMNI_REC_SPEED", opt.speed_mps)).c_str()),
                                 nullptr);
@@ -841,6 +904,57 @@ Options parse_options(int argc, char **argv)
                                       std::to_string(env_i("OMNI_REC_SAMPLE_HZ", opt.sample_hz)).c_str()));
     opt.directions = cli_get(argc, argv, "directions",
                              std::getenv("OMNI_REC_DIRECTIONS") ? std::getenv("OMNI_REC_DIRECTIONS") : opt.directions.c_str());
+    if (cli_has(argc, argv, "kd"))
+    {
+        opt.has_kd_override = true;
+        opt.kd_override = std::strtof(cli_get(argc, argv, "kd", "0"), nullptr);
+        if (!std::isfinite(opt.kd_override) || opt.kd_override < 0.0f)
+            opt.kd_override = 0.0f;
+    }
+    if (cli_has(argc, argv, "kds"))
+    {
+        const std::string kds = cli_get(argc, argv, "kds", "");
+        opt.has_kd_override_list = parse_float_array4(kds, opt.kd_override_list);
+        if (!opt.has_kd_override_list)
+        {
+            std::cerr << "[OMNI-REC][WARN] invalid --kds '" << kds
+                      << "', expected four non-negative comma-separated numbers.\n";
+        }
+    }
+    if (cli_has(argc, argv, "ff-scales"))
+    {
+        const std::string scales = cli_get(argc, argv, "ff-scales", "");
+        opt.has_ff_scale_override = parse_float_array4(scales, opt.ff_scale_override);
+        if (!opt.has_ff_scale_override)
+        {
+            std::cerr << "[OMNI-REC][WARN] invalid --ff-scales '" << scales
+                      << "', expected four non-negative comma-separated numbers.\n";
+        }
+    }
+    if (cli_has(argc, argv, "corrections"))
+    {
+        const std::string corrections = cli_get(argc, argv, "corrections", "");
+        opt.has_correction_override = parse_float_array4(corrections, opt.correction_override);
+        if (!opt.has_correction_override)
+        {
+            std::cerr << "[OMNI-REC][WARN] invalid --corrections '" << corrections
+                      << "', expected four non-negative comma-separated numbers.\n";
+        }
+    }
+    if (cli_has(argc, argv, "wheel-directions"))
+    {
+        const std::string dirs = cli_get(argc, argv, "wheel-directions", "");
+        opt.has_direction_override = parse_direction_array4(dirs, opt.direction_override);
+        if (!opt.has_direction_override)
+        {
+            std::cerr << "[OMNI-REC][WARN] invalid --wheel-directions '" << dirs
+                      << "', expected four comma-separated +/- values.\n";
+        }
+    }
+    opt.breakaway_scale = std::strtof(
+        cli_get(argc, argv, "breakaway-scale",
+                std::to_string(env_f("OMNI_REC_BREAKAWAY_SCALE", opt.breakaway_scale)).c_str()),
+        nullptr);
 
     mkdir("var_data", 0755);
     const std::string ts = timestamp_string();
@@ -852,6 +966,10 @@ Options parse_options(int argc, char **argv)
     opt.reach_abs_tol = std::max(0.0f, opt.reach_abs_tol);
     opt.reach_hold_s = std::max(0.0f, opt.reach_hold_s);
     opt.sample_hz = std::max(1, opt.sample_hz);
+    if (!std::isfinite(opt.breakaway_scale) || opt.breakaway_scale < 0.0f)
+        opt.breakaway_scale = 1.0f;
+    if (opt.slave_id < 1)
+        opt.slave_id = 1;
     return opt;
 }
 
@@ -879,6 +997,7 @@ int main(int argc, char **argv)
     std::cout << "===============================================\n"
               << "  R2 Omni Motion Record / Drift Measurement\n"
               << "  IFNAME   : " << opt.ifname << "\n"
+              << "  slave-id : " << opt.slave_id << "\n"
               << "  speed    : " << opt.speed_mps << " m/s\n"
               << "  duration : " << opt.duration_s << " s per segment\n"
               << "  startup  : window=" << opt.startup_window_s
@@ -887,14 +1006,28 @@ int main(int argc, char **argv)
               << " hold=" << opt.reach_hold_s << "s\n"
               << "  output   : " << opt.csv_path << "\n"
               << "===============================================\n"
-              << "[SAFETY] Put the chassis on clear flat ground. Keep hands away from wheels.\n"
+              << "[SAFETY] Keep the chassis suspended or on a clear test area. Keep hands away from wheels.\n"
               << "[SAFETY] Press Ctrl+C to stop; the tool sends DM exit frames before returning.\n";
 
-    if (!init_ethercat_linkx(opt.ifname))
+    if (!init_ethercat_linkx(opt.ifname, opt.slave_id))
         return 2;
 
     st_chassis.Init(&st_linkx);
     st_chassis.Init_Motor_Params();
+    for (int i = 0; i < OMNI_WHEEL_NUM; ++i)
+    {
+        if (opt.has_ff_scale_override)
+            st_chassis.wheel_params_[i].wheel_feedforward_scale = opt.ff_scale_override[i];
+        if (opt.has_correction_override)
+            st_chassis.wheel_params_[i].wheel_speed_correction = opt.correction_override[i];
+        if (opt.has_kd_override)
+            st_chassis.wheel_params_[i].wheel_kd = opt.kd_override;
+        if (opt.has_kd_override_list)
+            st_chassis.wheel_params_[i].wheel_kd = opt.kd_override_list[i];
+        if (opt.has_direction_override)
+            st_chassis.wheel_params_[i].wheel_direction = opt.direction_override[i];
+        st_chassis.wheel_params_[i].wheel_breakaway_torque *= opt.breakaway_scale;
+    }
     st_chassis.Set_Chassis_Control_Type(Chassis_Omni_Control_Type_ENABLE);
     set_chassis_command(0.0f, 0.0f, 0.0f);
 

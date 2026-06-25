@@ -15,14 +15,15 @@
 #define Omni_Wheel_To_Core_Distance_Define  0.24621f
 
 /* 整车最大线/角速度 */
-#define MAX_OMNI_CHASSIS_SPEED              5.0f
-#define MAX_OMNI_CHASSIS_OMEGA              10.0f
+#define MAX_OMNI_CHASSIS_SPEED              1.5f
+#define MAX_OMNI_CHASSIS_OMEGA              1.5f
 
-/* 底盘速度矢量斜坡：起步适中，停车/换向更快以保证遥控跟手 */
-#define OMNI_CHASSIS_LINEAR_ACCEL_LIMIT_M_S2 8.0f
-#define OMNI_CHASSIS_LINEAR_DECEL_LIMIT_M_S2 12.0f
-#define OMNI_CHASSIS_ANG_ACCEL_LIMIT_RAD_S2  24.0f
-#define OMNI_CHASSIS_ANG_DECEL_LIMIT_RAD_S2  32.0f
+/* 底盘速度矢量斜坡：2026-06-26 起步加速调大至与停车/换向对称（线 8→12、角 24→32）。
+ * 注：W1/W2 受载牵引受限，起步更猛时弱轮更易饱和、起步偏航可能变大，需实测。 */
+#define OMNI_CHASSIS_LINEAR_ACCEL_LIMIT_M_S2 10.0f
+#define OMNI_CHASSIS_LINEAR_DECEL_LIMIT_M_S2 10.0f
+#define OMNI_CHASSIS_ANG_ACCEL_LIMIT_RAD_S2  10.0f
+#define OMNI_CHASSIS_ANG_DECEL_LIMIT_RAD_S2  10.0f
 
 /* 轮速梯形加减速参数（由 2026-06-08/09 架空测试结果收敛得到） */
 #define OMNI_WHEEL_PROFILE_DT               0.002f

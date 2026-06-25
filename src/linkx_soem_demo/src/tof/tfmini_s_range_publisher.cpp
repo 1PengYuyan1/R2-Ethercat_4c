@@ -32,7 +32,7 @@ constexpr SensorMap kSensorMap[kTfminiSensorCount] = {
     {1U, 3U, 0x01U, "/high/right_left/range", "right_left"},
     {1U, 3U, 0x02U, "/high/right_right/range", "right_right"},
     {1U, 2U, 0x01U, "/high/back_left/range", "back_left"},
-    {1U, 2U, 0x02U, "/high/back_right/range", "back_right"},
+    {1U, 2U, 0x02U, "/high/down_back2/range", "down_back2"},
     {2U, 3U, 0x02U, "/high/up_front/range", "up_front"},
     {2U, 3U, 0x01U, "/high/down_front/range", "down_front"},
     {2U, 2U, 0x01U, "/high/up_back/range", "up_back"},

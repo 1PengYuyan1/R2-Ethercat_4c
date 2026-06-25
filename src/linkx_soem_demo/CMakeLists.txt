@@ -75,6 +75,7 @@ set(VEHICLE_CONTROL_SRC
     src/vehicle_control/5_Task/task/task.cpp
     src/vehicle_control/4_Interaction/robot/robot.cpp
     src/diagnostics/chassis_trace/chassis_trace_logger.cpp
+    src/diagnostics/stair_trace/stair_trace_logger.cpp
     src/diagnostics/can_terminal/can_terminal_printer.cpp
     src/diagnostics/task_terminal/task_terminal_diagnostics.cpp
     src/diagnostics/timing_terminal/timing_terminal_printer.cpp
@@ -126,6 +127,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     include/linkx_soem_demo/vehicle_control/4_Interaction/robot
     include/linkx_soem_demo/vehicle_control/5_Task/task
     src/diagnostics/chassis_trace
+    src/diagnostics/stair_trace
     src/diagnostics/can_terminal
     src/diagnostics/task_terminal
     src/diagnostics/timing_terminal
@@ -239,6 +241,25 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/omni_motion_record_main.c
     list(APPEND LINKX_SOEM_INSTALL_TARGETS omni_motion_record)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/omni_straight_retest_main.cpp")
+    add_executable(omni_straight_retest
+        src/extra_tests/omni_straight_retest_main.cpp
+        src/vehicle_control/3_Chariot/chassis/omni_wheel/crt_chassis_omni.cpp
+        src/vehicle_control/2_Device/Motor/dvc_motor_dm.cpp
+        src/vehicle_control/1_Middleware/Algorithm/alg_pid.cpp
+        src/vehicle_control/1_Middleware/Algorithm/ramp.c
+        ${SOEM_SRC}
+        ${LINKX_BRIDGE_SRC}
+    )
+    target_include_directories(omni_straight_retest PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
+    target_link_libraries(omni_straight_retest pcap pthread rt m)
+    ament_target_dependencies(omni_straight_retest
+        rclcpp
+        sensor_msgs
+    )
+    list(APPEND LINKX_SOEM_INSTALL_TARGETS omni_straight_retest)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/omni_accel_response_main.cpp")
     add_executable(omni_accel_response
         src/extra_tests/omni_accel_response_main.cpp
@@ -268,6 +289,20 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/imu_heading_hold_sweep_ma
     list(APPEND LINKX_SOEM_INSTALL_TARGETS imu_heading_hold_sweep)
 endif()
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/omni_straight_line_autotune_main.cpp")
+    add_executable(omni_straight_line_autotune
+        src/extra_tests/omni_straight_line_autotune_main.cpp
+    )
+    target_include_directories(omni_straight_line_autotune PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
+    ament_target_dependencies(omni_straight_line_autotune
+        rclcpp
+        geometry_msgs
+        sensor_msgs
+        rcl_interfaces
+    )
+    list(APPEND LINKX_SOEM_INSTALL_TARGETS omni_straight_line_autotune)
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/remote_chassis_yaw_tune_main.cpp")
     add_executable(remote_chassis_yaw_tune
         src/extra_tests/remote_chassis_yaw_tune_main.cpp
@@ -280,6 +315,28 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/remote_chassis_yaw_tune_m
         rcl_interfaces
     )
     list(APPEND LINKX_SOEM_INSTALL_TARGETS remote_chassis_yaw_tune)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/chassis_zero_deadzone_stiction_tune_main.cpp")
+    add_executable(chassis_zero_deadzone_stiction_tune
+        src/extra_tests/chassis_zero_deadzone_stiction_tune_main.cpp
+    )
+    target_include_directories(chassis_zero_deadzone_stiction_tune PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
+    ament_target_dependencies(chassis_zero_deadzone_stiction_tune
+        rclcpp
+        geometry_msgs
+        sensor_msgs
+        std_msgs
+        rcl_interfaces
+    )
+    list(APPEND LINKX_SOEM_INSTALL_TARGETS chassis_zero_deadzone_stiction_tune)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/omni_chassis_full_retest_main.cpp")
+    add_executable(omni_chassis_full_retest
+        src/extra_tests/omni_chassis_full_retest_main.cpp
+    )
+    list(APPEND LINKX_SOEM_INSTALL_TARGETS omni_chassis_full_retest)
 endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/lift_3519_feedback_main.cpp")
@@ -310,6 +367,23 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/lift_raise_drive_test_mai
         sensor_msgs
     )
     list(APPEND LINKX_SOEM_INSTALL_TARGETS lift_raise_drive_test)
+endif()
+
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/lift_raise_straight_line_imu_autotune_main.cpp")
+    add_executable(lift_raise_straight_line_imu_autotune
+        src/extra_tests/lift_raise_straight_line_imu_autotune_main.cpp
+        src/vehicle_control/3_Chariot/lift/crt_lift.cpp
+        src/vehicle_control/2_Device/Motor/dvc_motor_dm.cpp
+        ${SOEM_SRC}
+        ${LINKX_BRIDGE_SRC}
+    )
+    target_include_directories(lift_raise_straight_line_imu_autotune PRIVATE ${EXTRA_TEST_INCLUDE_DIRS})
+    target_link_libraries(lift_raise_straight_line_imu_autotune pcap pthread rt m)
+    ament_target_dependencies(lift_raise_straight_line_imu_autotune
+        rclcpp
+        sensor_msgs
+    )
+    list(APPEND LINKX_SOEM_INSTALL_TARGETS lift_raise_straight_line_imu_autotune)
 endif()
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/extra_tests/lift_tof_trigger_test_main.cpp")
