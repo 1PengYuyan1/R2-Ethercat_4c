@@ -57,12 +57,13 @@ protected:
         int64_t timeout_ns = 100LL * 1000LL * 1000LL;
         float turn_eps = 0.05f;
         float move_eps = 0.02f;
-        // 2026-06-25 slow-only 纠偏直行调参收敛值（kp 3.5→5.5、kd 0.03→0.08）：
-        // W1/W2 受载力矩饥饿未修，配 slow-only 纠偏在 0.5 m/s 指令(实际 ~0.22 m/s)下可跑直，
-        // 2m yaw_rms ~2°、横漂 12~18cm。corrections 维持原值（配平候选均更差）。
-        float kp = 5.5f;
+        // 2026-06-25 slow-only 纠偏直行调参收敛值（cmd=1.0 工作点 retune：kp→7.5、kd→0.12）：
+        // W1/W2 受载力矩饥饿未修，配 slow-only 纠偏，cmd=1.0(实际 ~0.55 m/s)下 3m 前后可跑直，
+        // yaw_rms ~2.3°；残留横漂 ~20cm/3m 是 W1/W2 弱导致的系统性蟹行(航向闭环纠不了横向)。
+        // corrections 维持原值（配平候选均更差）。cmd≥1.2 失稳，1.0 为硬件不修下的最高可用档。
+        float kp = 7.5f;
         float ki = 0.0f;
-        float kd = 0.08f;
+        float kd = 0.12f;
         float kf = 0.0f;
         float i_out_max = 0.0f;
         float out_limit_scale = 0.6f;  // autotune 20260624 直行调参推荐值（原 0.8）
