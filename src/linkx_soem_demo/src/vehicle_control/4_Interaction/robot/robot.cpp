@@ -618,6 +618,8 @@ void Class_Robot::_Chassis_Control()
         Chassis.Set_Chassis_Control_Type(Chassis_Omni_Control_Type_ENABLE);
         Chassis.Set_Target_Velocity_X(vx_cmd);
         Chassis.Set_Target_Velocity_Y(vy_cmd);
+        /* 航向纠偏激活时启用“只降速纠偏”：不向已饱和的弱轮要提速，只压快轮。 */
+        Chassis.Set_Yaw_Correction_Slow_Only(imu_heading_hold_.Was_Correcting());
         Chassis.Set_Target_Omega(lift_diff_mode ? 0.0f : omega_out);
         if ((now - last_chassis_diag_ns_) >= 1000LL * 1000LL * 1000LL)
         {
@@ -634,6 +636,7 @@ void Class_Robot::_Chassis_Control()
         Chassis.Set_Chassis_Control_Type(Chassis_Omni_Control_Type_ENABLE);
         Chassis.Set_Target_Velocity_X(0.0f);
         Chassis.Set_Target_Velocity_Y(0.0f);
+        Chassis.Set_Yaw_Correction_Slow_Only(false);
         Chassis.Set_Target_Omega(0.0f);
         if ((now - last_chassis_diag_ns_) >= 1000LL * 1000LL * 1000LL)
         {
