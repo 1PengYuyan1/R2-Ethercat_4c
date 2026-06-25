@@ -272,6 +272,8 @@ public:
     void Set_Position_Unwrap(bool __enable) { Position_Unwrap_Enable_ = __enable; }
     // 反馈位置 16-bit 半区间缩放，默认等于控制 Pmax；部分减速电机反馈单圈范围与控制 Pmax 不一致。
     void Set_Feedback_Radian_Max(float __Feedback_Radian_Max) { Feedback_Radian_Max = __Feedback_Radian_Max; }
+    // 反馈转速缩放，默认 1.0；部分电机速度反馈标定与控制 Omega_Max 不一致（命令正确、仅反馈低/高报）时单独设置。
+    void Set_Feedback_Omega_Scale(float __Feedback_Omega_Scale) { Feedback_Omega_Scale = __Feedback_Omega_Scale; }
 
     void TIM_Alive_PeriodElapsedCallback();
     void TIM_Send_PeriodElapsedCallback();
@@ -342,6 +344,8 @@ protected:
     float Radian_Max;
     // 反馈位置 16-bit 半区间缩放；默认与 Radian_Max 相同，可按具体电机反馈编码单独设置
     float Feedback_Radian_Max;
+    // 反馈转速缩放；默认 1.0，可按具体电机速度反馈标定单独设置（不影响下发命令）
+    float Feedback_Omega_Scale = 1.0f;
     // 最大速度, 与上位机控制幅值VMAX保持一致
     float Omega_Max;
     // 最大扭矩, 与上位机控制幅值TMAX保持一致
@@ -599,7 +603,7 @@ inline float Class_Motor_DM_Normal::Get_Current_Single_Radian()
  */
 inline float Class_Motor_DM_Normal::Get_Now_Omega()
 {
-    return (data.Now_Omega);
+    return (data.Now_Omega * Feedback_Omega_Scale);
 }
 
 /**

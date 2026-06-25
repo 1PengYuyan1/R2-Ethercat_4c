@@ -14,12 +14,6 @@
 /* 轮毂中心到底盘旋转中心距离（m）= 246.21mm */
 #define Omni_Wheel_To_Core_Distance_Define  0.24621f
 
-/* DM3519 实际减速箱为 268:17，当前电机固件仍按 19:1 解释速度命令/反馈 */
-#define OMNI_WHEEL_GEAR_RATIO_ACTUAL        (268.0f / 17.0f)
-#define OMNI_WHEEL_GEAR_RATIO_CONFIGURED    19.0f
-#define OMNI_WHEEL_COMMAND_GEAR_SCALE       (OMNI_WHEEL_GEAR_RATIO_ACTUAL / OMNI_WHEEL_GEAR_RATIO_CONFIGURED)
-#define OMNI_WHEEL_FEEDBACK_GEAR_SCALE      (OMNI_WHEEL_GEAR_RATIO_CONFIGURED / OMNI_WHEEL_GEAR_RATIO_ACTUAL)
-
 /* 整车最大线/角速度 */
 #define MAX_OMNI_CHASSIS_SPEED              5.0f
 #define MAX_OMNI_CHASSIS_OMEGA              10.0f
@@ -39,6 +33,10 @@
 #define OMNI_WHEEL_RELIABLE_OMEGA_LIMIT     80.0f
 #define OMNI_WHEEL_BREAKAWAY_OMEGA_RAD_S    2.0f
 #define OMNI_WHEEL_BREAKAWAY_RATIO          0.90f
+
+/* W0_RB 速度反馈低报修正（2026-06-25 架空实测：命令正确转 6.28 圈，反馈仅报 4.86 圈，
+ * 稳态反馈比 0.780）。仅修正反馈，不动命令；scale = 1/0.780 ≈ 1.282，待固件查清后归 1。 */
+#define OMNI_WHEEL_W0_FEEDBACK_OMEGA_SCALE  1.282f
 
 /**
  * @brief 全向轮单轮参数
@@ -107,6 +105,15 @@ public:
     inline void Set_Target_Velocity_X(float __vx);
     inline void Set_Target_Velocity_Y(float __vy);
     inline void Set_Target_Omega(float __omega);
+    /* 只降速纠偏开关：true 时逆解里 omega（航向纠偏）只许降低各轮幅值、不许提速。
+     * 由上层在“航向纠偏激活”时每周期置位；默认 false，不影响用户主动转向。 */
+    inline void Set_Yaw_Correction_Slow_Only(bool __enable);
+
+    /* 逐轮软件速度环（补 MIT Kp=0 缺的积分，消除地面负载稳态垂降）。
+     * 默认 kp=ki=0 → 完全不改变原行为。i_limit 为积分力矩限幅(N·m)。 */
+    void Set_Velocity_Loop(float __kp, float __ki, float __i_limit);
+    void Set_Torque_FF_Limit(float __limit_nm);
+    inline float Get_Wheel_Vel_Integral(int index);
 
     void TIM_2ms_Resolution_PeriodElapsedCallback();
     void TIM_2ms_Control_PeriodElapsedCallback();
@@ -144,7 +151,16 @@ protected:
     float Last_Target_Wheel_Omega[OMNI_WHEEL_NUM] = {0.0f};
     float Wheel_Command_Accel[OMNI_WHEEL_NUM] = {0.0f};
     float Wheel_Accel_Filtered[OMNI_WHEEL_NUM] = {0.0f};
+
+    /* 软件速度环状态/增益。落地负载下 MIT Kp=0 会稳态欠跟踪；
+     * 默认开启低增益积分，和 omni_straight_retest 当前验证配置一致。 */
+    float Wheel_Vel_Integral[OMNI_WHEEL_NUM] = {0.0f};
+    float Vel_Loop_Kp = 0.0f;
+    float Vel_Loop_Ki = 2.0f;
+    float Vel_Loop_I_Limit = 3.0f;
+    float Torque_FF_Limit = 3.0f;
     bool was_enabled_ = false;
+    bool yaw_correction_slow_only_ = false;
     uint16_t disable_exit_burst_ticks_ = 0;
 
     Enum_Chassis_Omni_Control_Type Chassis_Control_Type = Chassis_Omni_Control_Type_DISABLE;
@@ -188,6 +204,10 @@ inline float Class_Chassis_Omni::Get_Wheel_Accel_Filtered(int index)
 {
     return (index >= 0 && index < OMNI_WHEEL_NUM) ? Wheel_Accel_Filtered[index] : 0.0f;
 }
+inline float Class_Chassis_Omni::Get_Wheel_Vel_Integral(int index)
+{
+    return (index >= 0 && index < OMNI_WHEEL_NUM) ? Wheel_Vel_Integral[index] : 0.0f;
+}
 
 inline void Class_Chassis_Omni::Set_Chassis_Control_Type(Enum_Chassis_Omni_Control_Type __type)
 {
@@ -196,5 +216,6 @@ inline void Class_Chassis_Omni::Set_Chassis_Control_Type(Enum_Chassis_Omni_Contr
 inline void Class_Chassis_Omni::Set_Target_Velocity_X(float __vx)    { Target_Velocity_X = __vx; }
 inline void Class_Chassis_Omni::Set_Target_Velocity_Y(float __vy)    { Target_Velocity_Y = __vy; }
 inline void Class_Chassis_Omni::Set_Target_Omega(float __omega)      { Target_Omega      = __omega; }
+inline void Class_Chassis_Omni::Set_Yaw_Correction_Slow_Only(bool __enable) { yaw_correction_slow_only_ = __enable; }
 
 #endif // CRT_CHASSIS_OMNI_H

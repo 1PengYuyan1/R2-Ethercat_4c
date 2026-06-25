@@ -21,6 +21,9 @@ void Class_Chassis_Omni::Init(linkx_t *__LinkX_Handler)
         Motor_Wheel[i].Set_Use_FDCAN(true);
         Motor_Wheel[i].Set_Force_Output_Without_Feedback(false);
     }
+
+    /* W0_RB 速度反馈系统性低报，单独修正反馈缩放（命令正确，不动命令侧）。 */
+    Motor_Wheel[0].Set_Feedback_Omega_Scale(OMNI_WHEEL_W0_FEEDBACK_OMEGA_SCALE);
 }
 
 /**
@@ -197,7 +200,6 @@ void Class_Chassis_Omni::Self_Resolution()
     for (int i = 0; i < OMNI_WHEEL_NUM; i++)
     {
         float wheel_speed = Motor_Wheel[i].Get_Now_Omega() *
-                            OMNI_WHEEL_FEEDBACK_GEAR_SCALE *
                             Wheel_Radius *
                             wheel_params_[i].wheel_direction;
 
@@ -305,13 +307,23 @@ void Class_Chassis_Omni::Kinematics_Inverse_Resolution()
     float max_wheel_omega = 0.0f;
     for (int i = 0; i < OMNI_WHEEL_NUM; i++)
     {
-        float v_wheel = -vx_cmd * sinf(Wheel_Azimuth[i]) -
-                         vy_cmd * cosf(Wheel_Azimuth[i]) -
-                         omega_cmd * Wheel_To_Core_Distance;
+        const float v_trans = -vx_cmd * sinf(Wheel_Azimuth[i]) -
+                               vy_cmd * cosf(Wheel_Azimuth[i]);
+        const float v_wheel = v_trans - omega_cmd * Wheel_To_Core_Distance;
 
-        Raw_Target_Wheel_Omega[i] = (v_wheel / Wheel_Radius) *
-                                    wheel_params_[i].wheel_direction *
-                                    wheel_params_[i].wheel_speed_correction;
+        const float gain = wheel_params_[i].wheel_direction *
+                           wheel_params_[i].wheel_speed_correction;
+        Raw_Target_Wheel_Omega[i] = (v_wheel / Wheel_Radius) * gain;
+
+        /* 只降速纠偏：纠偏 omega（IMU 航向 PID 输出）只允许降低各轮幅值，
+         * 不允许把已饱和的弱轮往上提——被 omega 项加速的轮夹回纯平移幅值，
+         * 纠偏力矩只由“降速侧”产生。仅在航向纠偏激活时由上层置位。 */
+        if (yaw_correction_slow_only_)
+        {
+            const float base = (v_trans / Wheel_Radius) * gain;
+            if (fabsf(Raw_Target_Wheel_Omega[i]) > fabsf(base))
+                Raw_Target_Wheel_Omega[i] = base;
+        }
 
         if (fabsf(Raw_Target_Wheel_Omega[i]) > max_wheel_omega)
             max_wheel_omega = fabsf(Raw_Target_Wheel_Omega[i]);
@@ -454,7 +466,6 @@ void Class_Chassis_Omni::Output_To_Motor()
                           Wheel_Accel_Filtered[i];
 
         const float now_omega = Motor_Wheel[i].Get_Now_Omega() *
-                                OMNI_WHEEL_FEEDBACK_GEAR_SCALE *
                                 wheel_params_[i].wheel_direction;
         const float tracking_error = target_omega - now_omega;
         const bool tracking_shortfall =
@@ -473,12 +484,33 @@ void Class_Chassis_Omni::Output_To_Motor()
                          low_speed_weight;
         }
 
-        if (torque_ff >  OMNI_WHEEL_TORQUE_FF_LIMIT_NM) torque_ff =  OMNI_WHEEL_TORQUE_FF_LIMIT_NM;
-        if (torque_ff < -OMNI_WHEEL_TORQUE_FF_LIMIT_NM) torque_ff = -OMNI_WHEEL_TORQUE_FF_LIMIT_NM;
+        /* 逐轮软件速度环：MIT 用 Kp=0、无积分，地面负载下稳态会垂降
+         * (ω_actual ≈ ω_target - (T_load - τ_ff)/Kd)。这里加 P+I 力矩 trim 把
+         * actual 拉回 target。起步阶段(轮尚未越过 breakaway 速度)冻结积分，交给
+         * breakaway 破静摩擦，避免积分饱和冲击；停车时清零。带积分力矩限幅。 */
+        if ((Vel_Loop_Kp != 0.0f || Vel_Loop_Ki != 0.0f) &&
+            fabsf(target_omega) > deadzone)
+        {
+            const bool moving = fabsf(now_omega) > OMNI_WHEEL_BREAKAWAY_OMEGA_RAD_S;
+            if (Vel_Loop_Ki != 0.0f && moving)
+            {
+                Wheel_Vel_Integral[i] += Vel_Loop_Ki * tracking_error * OMNI_WHEEL_PROFILE_DT;
+                if (Wheel_Vel_Integral[i] >  Vel_Loop_I_Limit) Wheel_Vel_Integral[i] =  Vel_Loop_I_Limit;
+                if (Wheel_Vel_Integral[i] < -Vel_Loop_I_Limit) Wheel_Vel_Integral[i] = -Vel_Loop_I_Limit;
+            }
+            torque_ff += Vel_Loop_Kp * tracking_error + Wheel_Vel_Integral[i];
+        }
+        else
+        {
+            Wheel_Vel_Integral[i] = 0.0f;
+        }
+
+        if (torque_ff >  Torque_FF_Limit) torque_ff =  Torque_FF_Limit;
+        if (torque_ff < -Torque_FF_Limit) torque_ff = -Torque_FF_Limit;
 
         Motor_Wheel[i].Set_Control_Maintain_Postion(
             0.0f,
-            target_omega * OMNI_WHEEL_COMMAND_GEAR_SCALE,
+            target_omega,
             torque_ff,
             wheel_params_[i].wheel_kp,
             wheel_params_[i].wheel_kd);
@@ -506,5 +538,23 @@ void Class_Chassis_Omni::_Reset_State()
         Last_Target_Wheel_Omega[i] = 0.0f;
         Wheel_Command_Accel[i] = 0.0f;
         Wheel_Accel_Filtered[i] = 0.0f;
+        Wheel_Vel_Integral[i] = 0.0f;
     }
+}
+
+/**
+ * @brief 配置逐轮软件速度环增益（kp=ki=0 即关闭）
+ */
+void Class_Chassis_Omni::Set_Velocity_Loop(float __kp, float __ki, float __i_limit)
+{
+    Vel_Loop_Kp = __kp;
+    Vel_Loop_Ki = __ki;
+    Vel_Loop_I_Limit = (__i_limit > 0.0f) ? __i_limit : OMNI_WHEEL_TORQUE_FF_LIMIT_NM;
+    for (int i = 0; i < OMNI_WHEEL_NUM; i++)
+        Wheel_Vel_Integral[i] = 0.0f;
+}
+
+void Class_Chassis_Omni::Set_Torque_FF_Limit(float __limit_nm)
+{
+    Torque_FF_Limit = (__limit_nm > 0.0f) ? __limit_nm : OMNI_WHEEL_TORQUE_FF_LIMIT_NM;
 }

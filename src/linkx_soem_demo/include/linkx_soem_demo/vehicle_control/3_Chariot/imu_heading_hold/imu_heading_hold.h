@@ -45,6 +45,10 @@ public:
                         bool lift_diff_mode,
                         int64_t now_ns);
 
+    /* 上一次 Correct_Omega 是否处于“航向纠偏激活”分支（即返回的 omega 是 PID 纠偏量，
+     * 而非用户主动转向透传）。供底盘据此启用“只降速纠偏”。 */
+    bool Was_Correcting() const { return last_correcting_.load(); }
+
 protected:
     struct Config
     {
@@ -53,12 +57,15 @@ protected:
         int64_t timeout_ns = 100LL * 1000LL * 1000LL;
         float turn_eps = 0.05f;
         float move_eps = 0.02f;
-        float kp = 3.5f;
+        // 2026-06-25 slow-only 纠偏直行调参收敛值（kp 3.5→5.5、kd 0.03→0.08）：
+        // W1/W2 受载力矩饥饿未修，配 slow-only 纠偏在 0.5 m/s 指令(实际 ~0.22 m/s)下可跑直，
+        // 2m yaw_rms ~2°、横漂 12~18cm。corrections 维持原值（配平候选均更差）。
+        float kp = 5.5f;
         float ki = 0.0f;
-        float kd = 0.03f;
+        float kd = 0.08f;
         float kf = 0.0f;
         float i_out_max = 0.0f;
-        float out_limit_scale = 0.8f;
+        float out_limit_scale = 0.6f;  // autotune 20260624 直行调参推荐值（原 0.8）
         float dt = 0.001f;
         float dead_zone = 0.01f;
     };
@@ -78,6 +85,7 @@ protected:
     std::atomic<float> latest_imu_accel_z_{0.0f};
     std::atomic<int64_t> latest_imu_ns_{0};
     std::atomic<bool> imu_valid_{false};
+    std::atomic<bool> last_correcting_{false};
 
     float heading_target_ = 0.0f;
     bool heading_locked_ = false;

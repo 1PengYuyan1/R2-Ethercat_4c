@@ -114,6 +114,8 @@ float Class_Chariot_Imu_Heading_Hold::Correct_Omega(float vx_cmd,
     const bool heading_allowed =
         config_.enable && imu_fresh && !lift_diff_mode && !user_turning;
 
+    last_correcting_.store(heading_allowed && moving);
+
     if (heading_allowed && moving)
     {
         const float yaw_now = latest_imu_yaw_.load();
