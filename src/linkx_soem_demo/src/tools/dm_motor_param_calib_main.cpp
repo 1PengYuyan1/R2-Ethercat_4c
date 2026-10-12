@@ -14,8 +14,8 @@
 // command-line parsing, safety checks, and result printing.
 //
 // Usage:
-//   sudo IFNAME=enp86s0 ros2 run linkx_soem_demo dm_motor_param_calib --motor wheel --wheel 0 --test all
-//   sudo IFNAME=enp86s0 ./install/linkx_soem_demo/lib/linkx_soem_demo/dm_motor_param_calib --motor wheel --wheel 0 --test friction
+//   sudo IFNAME=enp4s0 ros2 run linkx_soem_demo dm_motor_param_calib --motor wheel --wheel 0 --test all
+//   sudo IFNAME=enp4s0 ./install/linkx_soem_demo/lib/linkx_soem_demo/dm_motor_param_calib --motor wheel --wheel 0 --test friction
 //
 // Environment variables, equivalent to CLI defaults:
 //   CALIB_MOTOR=wheel|omni
@@ -361,7 +361,7 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    const std::string ifname = std::getenv("IFNAME") ? std::getenv("IFNAME") : "enp86s0";
+    const std::string ifname = std::getenv("IFNAME") ? std::getenv("IFNAME") : "enp4s0";
 
     const std::string motor_str = cli_get(
         argc,

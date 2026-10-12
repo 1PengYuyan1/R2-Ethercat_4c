@@ -24,7 +24,7 @@ def generate_launch_description():
         'config', 'hipnuc_config.yaml')
 
     return LaunchDescription([
-        DeclareLaunchArgument('ifname', default_value='enp86s0'),
+        DeclareLaunchArgument('ifname', default_value=os.environ.get('IFNAME', 'enp4s0')),
         DeclareLaunchArgument('start_vehicle_control', default_value='true'),
         DeclareLaunchArgument('start_gimbal_bridge', default_value='false'),
         DeclareLaunchArgument('vehicle_prefix', default_value=''),
@@ -32,10 +32,10 @@ def generate_launch_description():
         DeclareLaunchArgument('start_imu', default_value='true'),
 
         # 0) IMU 发布节点（HiPNUC → /IMU_data, sensor_msgs/Imu, best_effort）
-        #    供主控 vehicle_control 订阅做航向保持纠偏；listener demo 不启动
+        #    供主控 vehicle_control 订阅做航向保持纠偏；hipnuc_imu_listener 示例不启动
         Node(
             package='hipnuc_imu',
-            executable='talker',
+            executable='hipnuc_imu_node',
             name='IMU_publisher',
             output='screen',
             condition=IfCondition(start_imu),

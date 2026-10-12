@@ -12,7 +12,7 @@
 // 控制线程作为消费者：DrainRx() 取走原始帧自行分发，并照常调用
 // linkx_send_can 入队电机/复位帧（由 linkx 内部 tx_lock 保证线程安全）。
 //
-// 参考 src/extra_tests/tfmini_s_can_read_main.cpp 的 io_thread_func /
+// 参考 src/tools/tfmini_s_can_read_main.cpp 的 io_thread_func /
 // quick_recv_isolated / RxSnapshot 去重设计。
 
 #include <array>

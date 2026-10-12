@@ -8,8 +8,8 @@
 //   front extra: LinkX CAN0, DM motor Tx 0x07, feedback Rx 0x17
 //
 // Example:
-//   sudo IFNAME=enp86s0 build/linkx_soem_demo/lift_3519_feedback --module both
-//   sudo IFNAME=enp86s0 build/linkx_soem_demo/lift_3519_feedback --module front --duration 10
+//   sudo IFNAME=enp4s0 build/linkx_soem_demo/lift_3519_feedback --module both
+//   sudo IFNAME=enp4s0 build/linkx_soem_demo/lift_3519_feedback --module front --duration 10
 
 #include <algorithm>
 #include <array>
@@ -614,7 +614,7 @@ void print_usage(const char *argv0)
 {
     std::cerr
         << "Usage:\n"
-        << "  " << argv0 << " [--ifname enp86s0] [--module rear|front|front07|both]\n"
+        << "  " << argv0 << " [--ifname enp4s0] [--module rear|front|front07|both]\n"
         << "        [--print-hz 10] [--duration 0] [--enable 1] [--exit-on-stop 1]\n"
         << "        [--record 0|1] [--record-path var_data/lift/lift_3519_feedback_log.csv]\n"
         << "        [--record-hz 50]\n\n"
@@ -667,7 +667,7 @@ int main(int argc, char **argv)
         argc,
         argv,
         "ifname",
-        std::getenv("IFNAME") ? std::getenv("IFNAME") : "enp86s0");
+        std::getenv("IFNAME") ? std::getenv("IFNAME") : "enp4s0");
 
     bool module_ok = false;
     const ModuleSelection module_selection = parse_module_selection(

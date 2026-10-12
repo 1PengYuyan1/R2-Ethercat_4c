@@ -10,8 +10,8 @@
 // using the same adapter.
 //
 // Example:
-//   sudo IFNAME=enp86s0 ros2 run linkx_soem_demo lift_tof_trigger_test
-//   sudo ./install/linkx_soem_demo/lib/linkx_soem_demo/lift_tof_trigger_test --ifname enp86s0 --raise-angle -14.3
+//   sudo IFNAME=enp4s0 ros2 run linkx_soem_demo lift_tof_trigger_test
+//   sudo ./install/linkx_soem_demo/lib/linkx_soem_demo/lift_tof_trigger_test --ifname enp4s0 --raise-angle -14.3
 
 #include <algorithm>
 #include <atomic>
@@ -128,7 +128,7 @@ void print_usage(const char *argv0)
 {
     std::cerr
         << "Usage:\n"
-        << "  " << argv0 << " [--ifname enp86s0] [--raise-angle -8.0]\n"
+        << "  " << argv0 << " [--ifname enp4s0] [--raise-angle -8.0]\n"
         << "        [--near-cm 10] [--jump-cm 5] [--print-ms 200] [--duration 0]\n\n"
         << "Behavior:\n"
         << "  /high/up_front/range  condition -> front lift RAISE/deploy\n"
@@ -320,7 +320,7 @@ int main(int argc, char **argv)
     opt.ifname = cli_value(argc,
                            argv,
                            "ifname",
-                           std::getenv("IFNAME") ? std::getenv("IFNAME") : "enp86s0");
+                           std::getenv("IFNAME") ? std::getenv("IFNAME") : "enp4s0");
     opt.raise_angle = parse_float(cli_value(argc, argv, "raise-angle", "-8.0"), -8.0f);
     opt.near_cm = parse_u16(cli_value(argc, argv, "near-cm", "10"), 10U);
     opt.jump_cm = parse_u16(cli_value(argc, argv, "jump-cm", "5"), 5U);

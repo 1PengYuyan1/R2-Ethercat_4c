@@ -7,8 +7,8 @@
 //   2) Per-wheel actual/target speed ratio and torque while moving.
 //
 // Usage:
-//   sudo IFNAME=enp86s0 ros2 run linkx_soem_demo omni_motion_record
-//   sudo IFNAME=enp86s0 ./install/linkx_soem_demo/lib/linkx_soem_demo/omni_motion_record \
+//   sudo IFNAME=enp4s0 ros2 run linkx_soem_demo omni_motion_record
+//   sudo IFNAME=enp4s0 ./install/linkx_soem_demo/lib/linkx_soem_demo/omni_motion_record \
 //        --speed 0.35 --duration 5 --settle 1.0 --analysis-delay 1.0
 //
 // Output:
@@ -71,7 +71,7 @@ std::array<float, OMNI_WHEEL_NUM> st_measured_accel {};
 
 struct Options
 {
-    std::string ifname = "enp86s0";
+    std::string ifname = "enp4s0";
     float speed_mps = 0.35f;
     float duration_s = 5.0f;
     float settle_s = 1.0f;
@@ -227,9 +227,9 @@ void print_usage(const char *argv0)
 {
     std::cerr
         << "Usage:\n"
-        << "  sudo IFNAME=enp86s0 " << argv0 << " [options]\n\n"
+        << "  sudo IFNAME=enp4s0 " << argv0 << " [options]\n\n"
         << "Options:\n"
-        << "  --ifname IFACE           EtherCAT NIC, default IFNAME env or enp86s0\n"
+        << "  --ifname IFACE           EtherCAT NIC, default IFNAME env or enp4s0\n"
         << "  --speed MPS             straight command speed, default 0.35\n"
         << "  --duration SEC          command duration per segment, default 5.0\n"
         << "  --settle SEC            zero-command settle time before each segment, default 1.0\n"

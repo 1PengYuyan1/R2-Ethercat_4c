@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <cstdlib>
 #include <signal.h>
 #include <string>
 #include "task.h"
@@ -18,8 +19,8 @@ int main(int argc, char *argv[]) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::setvbuf(stderr, nullptr, _IONBF, 0);
 
-    // 设置默认网卡名称 (根据你的实际情况修改，或通过参数传入)
-    std::string ifname = "enp86s0"; 
+    // 设置默认网卡名称：命令行参数 > IFNAME 环境变量 > enp4s0
+    std::string ifname = std::getenv("IFNAME") ? std::getenv("IFNAME") : "enp4s0";
 
     // 如果运行程序时传入了参数，则使用参数作为网口名
     // 例如: sudo ./linkx_soem_demo eth0

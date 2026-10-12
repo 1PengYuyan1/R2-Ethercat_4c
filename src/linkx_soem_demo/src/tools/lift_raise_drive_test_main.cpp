@@ -8,8 +8,8 @@
 //     Class_Chariot_Lift.
 //
 // Usage:
-//   sudo IFNAME=enp86s0 ros2 run linkx_soem_demo lift_raise_drive_test --module both
-//   sudo IFNAME=enp86s0 ./install/linkx_soem_demo/lib/linkx_soem_demo/lift_raise_drive_test \
+//   sudo IFNAME=enp4s0 ros2 run linkx_soem_demo lift_raise_drive_test --module both
+//   sudo IFNAME=enp4s0 ./install/linkx_soem_demo/lib/linkx_soem_demo/lift_raise_drive_test \
 //        --module front --cycles 1 --forward 0.25 --rod-start -1 --rod-end -15
 //
 // Output:
@@ -173,7 +173,7 @@ const std::array<LiftFeedforwardTable, CHARIOT_LIFT_MODULE_NUM> kLiftFeedforward
 
 struct Options
 {
-    std::string ifname = "enp86s0";
+    std::string ifname = "enp4s0";
     ModuleSelection module = ModuleSelection::Both;
     TestSuite suite = TestSuite::Lift;
     int cycles = 1;
@@ -4160,9 +4160,9 @@ void print_usage(const char *argv0)
 {
     std::cerr
         << "Usage:\n"
-        << "  sudo IFNAME=enp86s0 " << argv0 << " [options]\n\n"
+        << "  sudo IFNAME=enp4s0 " << argv0 << " [options]\n\n"
         << "Options:\n"
-        << "  --ifname IFACE       EtherCAT NIC, default IFNAME env or enp86s0\n"
+        << "  --ifname IFACE       EtherCAT NIC, default IFNAME env or enp4s0\n"
         << "  --module M           front|rear|both, default both\n"
         << "  --suite S            lift|identify|ff|scurve|fast|speed|accel|highaccel|stability|all_speed|race_auto|race_final|contact|param|single, default lift\n"
         << "  --cycles N           raise/retract cycles per case, default 1\n"

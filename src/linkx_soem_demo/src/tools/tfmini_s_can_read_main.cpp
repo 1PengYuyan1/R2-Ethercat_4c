@@ -317,7 +317,7 @@ void print_usage(const char *argv0)
 {
     std::cerr
         << "Usage:\n"
-        << "  " << argv0 << " [--ifname enp86s0] [--duration 0]\n"
+        << "  " << argv0 << " [--ifname enp4s0] [--duration 0]\n"
         << "        [--can-rate 1m-5m] [--print-ms 200] [--offline-ms 500]\n"
         << "        [--print-frames] [--print-raw]\n\n"
         << "Behavior:\n"
@@ -623,7 +623,7 @@ int main(int argc, char **argv)
     opt.ifname = cli_value(argc,
                            argv,
                            "ifname",
-                           std::getenv("IFNAME") ? std::getenv("IFNAME") : "enp86s0");
+                           std::getenv("IFNAME") ? std::getenv("IFNAME") : "enp4s0");
     opt.can_rate = cli_value(argc, argv, "can-rate", "1m-5m");
     opt.print_ms = std::max<uint32_t>(20U, parse_u32(cli_value(argc, argv, "print-ms", "200"), 200U));
     opt.offline_ms = std::max<uint32_t>(opt.print_ms, parse_u32(cli_value(argc, argv, "offline-ms", "500"), 500U));

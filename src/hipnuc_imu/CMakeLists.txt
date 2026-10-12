@@ -38,18 +38,18 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
-add_executable(talker src/serial_port.cpp)
-ament_target_dependencies(talker rclcpp std_msgs sensor_msgs hipnuc_lib_package rclcpp_components)
+add_executable(hipnuc_imu_node src/hipnuc_imu_node.cpp)
+ament_target_dependencies(hipnuc_imu_node rclcpp std_msgs sensor_msgs hipnuc_lib_package rclcpp_components)
 
-set_target_properties(talker PROPERTIES
+set_target_properties(hipnuc_imu_node PROPERTIES
     BUILD_WITH_INSTALL_RPATH TRUE
     INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib"
 )
 
-add_executable(listener src/sub_spec.cpp)
-ament_target_dependencies(listener rclcpp std_msgs sensor_msgs rclcpp_components)
+add_executable(hipnuc_imu_listener src/hipnuc_imu_listener.cpp)
+ament_target_dependencies(hipnuc_imu_listener rclcpp std_msgs sensor_msgs rclcpp_components)
 
-install(TARGETS talker listener  DESTINATION lib/${PROJECT_NAME})
+install(TARGETS hipnuc_imu_node hipnuc_imu_listener DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY
   config/

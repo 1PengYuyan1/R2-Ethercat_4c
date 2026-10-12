@@ -8,7 +8,7 @@
 - 核心入口：`./start_upper_computer.sh`
 - 主控包：`linkx_soem_demo`
 
-> 当前源码中网卡默认值不完全一致：`start_upper_computer.sh` 实际默认 `enp4s0`，`full_system.launch.py` 和 `linkx_soem_demo` 可执行默认 `enp86s0`。联调时建议始终通过 `--ifname <网卡名>` 或 `ifname:=<网卡名>` 显式指定。
+> 网卡默认值已统一为 `enp4s0`：`start_upper_computer.sh`、`full_system.launch.py`、主控及各工具一致；优先级为 `--ifname` > `IFNAME` 环境变量 > `enp4s0`。换机器或换网口时建议显式指定。
 
 ## 系统架构
 
@@ -40,11 +40,10 @@ SOEM EtherCAT Master -> LinkX-4C -> CAN0~CAN3 -> 全向轮/升降/夹爪/ToF
 
 | 包 | 作用 |
 | --- | --- |
-| `linkx_soem_demo` | 整车主控、SOEM/LinkX 通信、F710 遥控解算、话题转发和若干硬件测试工具 |
+| `linkx_soem_demo` | 整车主控、SOEM/LinkX 通信、F710 遥控解算、话题转发、TFmini-S ToF 发布和硬件联调工具 |
 | `linkx_bringup` | `full_system.launch.py`、`teleop.launch.py` 和 FastRTPS 配置 |
-| `hipnuc_imu` | HiPNUC 串口 IMU 发布节点，默认发布 `/IMU_data` |
+| `hipnuc_imu` | HiPNUC 串口 IMU 发布节点（`hipnuc_imu_node`），默认发布 `/IMU_data` |
 | `hipnuc_lib_package` | HiPNUC 协议解析共享库 |
-| `tof` | EtherCAT -> LinkX-4C -> CAN 测距节点，发布 `sensor_msgs/Range` |
 
 目录结构：
 
@@ -52,20 +51,29 @@ SOEM EtherCAT Master -> LinkX-4C -> CAN0~CAN3 -> 全向轮/升降/夹爪/ToF
 .
 ├── README.md
 ├── start_upper_computer.sh
+├── scripts/
+│   └── watch_tof_ranges.py            # ToF 话题实时监控脚本
 └── src/
     ├── linkx_soem_demo/
-    │   ├── src/vehicle_control/        # 整车主控
-    │   │   ├── 1_Middleware/           # SOEM、LinkX、PID、ramp
-    │   │   ├── 2_Device/               # EtherCAT、LinkX-4C、DM 电机、计时
-    │   │   ├── 3_Chariot/              # 全向底盘、升降、夹爪、IMU 航向保持
-    │   │   ├── 4_Interaction/robot/    # ROS 话题/服务桥
-    │   │   └── 5_Task/task/            # 初始化和周期任务
-    │   ├── src/remote/                 # F710 解算与话题转发
-    │   └── src/extra_tests/            # 硬件联调工具
+    │   ├── include/linkx_soem_demo/    # 与 src 同构的头文件树
+    │   │   ├── vehicle_control/        # 1_Middleware / 2_Device / 3_Chariot / 4_Interaction / 5_Task 分层
+    │   │   ├── remote/                 # F710 手柄解算与遥控节点头文件
+    │   │   ├── diagnostics/            # 运行时诊断辅助头文件
+    │   │   └── tof/                    # TFmini-S Range 发布头文件
+    │   └── src/
+    │       ├── vehicle_control/        # 整车主控（分层同上）
+    │       │   ├── 1_Middleware/       # SOEM、LinkX、PID、ramp
+    │       │   ├── 2_Device/           # EtherCAT、LinkX-4C、DM 电机、计时
+    │       │   ├── 3_Chariot/          # 全向底盘、升降、夹爪、IMU 航向保持
+    │       │   ├── 4_Interaction/      # ROS 话题/服务桥
+    │       │   └── 5_Task/             # 初始化和周期任务
+    │       ├── remote/                 # F710 解算与话题转发
+    │       ├── diagnostics/            # 运行时诊断辅助代码
+    │       ├── tof/                    # TFmini-S Range 发布
+    │       └── tools/                  # 硬件联调/标定/诊断工具（原 extra_tests）
     ├── linkx_bringup/
     ├── hipnuc_imu/
-    ├── hipnuc_lib_package/
-    └── tof/
+    └── hipnuc_lib_package/
 ```
 
 ## 依赖安装
@@ -74,9 +82,7 @@ SOEM EtherCAT Master -> LinkX-4C -> CAN0~CAN3 -> 全向轮/升降/夹爪/ToF
 
 ```bash
 sudo apt update
-sudo apt install -y \
-  ros-humble-joy \
-  libpcap-dev
+sudo apt install -y ros-humble-joy
 ```
 
 已假定 ROS 2 Humble 安装在 `/opt/ros/humble`。如果需要运行手柄链路，请确认 F710 或兼容手柄已接入，并能被 `/dev/input/js*` 识别。
@@ -123,12 +129,7 @@ sudo setcap cap_net_raw,cap_net_admin+ep \
 ./start_upper_computer.sh --ifname enp4s0 --no-sudo
 ```
 
-每次重新构建后，可执行文件可能被覆盖，需要重新执行 `setcap`。ToF 节点同理：
-
-```bash
-sudo setcap cap_net_raw,cap_net_admin+ep \
-  install/tof/lib/tof/can_link_test
-```
+每次重新构建后，可执行文件可能被覆盖，需要重新执行 `setcap`。ToF 测距由主控进程内发布，主控具备 raw 权限即可；`src/linkx_soem_demo/src/tools/` 下的联调工具（如 `tfmini_s_can_read`）独立运行时同样需要 raw 权限。
 
 运行前检查网卡：
 
@@ -174,7 +175,7 @@ ros2 launch linkx_bringup full_system.launch.py \
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `ifname` | `enp86s0` | 传给 `linkx_soem_demo` 的 EtherCAT 网卡名 |
+| `ifname` | `IFNAME` 环境变量或 `enp4s0` | 传给 `linkx_soem_demo` 的 EtherCAT 网卡名 |
 | `start_vehicle_control` | `true` | 是否启动 EtherCAT 整车主控 |
 | `start_gimbal_bridge` | `false` | 是否启动云台 relay |
 | `start_imu` | `true` | 是否启动 HiPNUC IMU 发布节点 |
@@ -198,7 +199,7 @@ ros2 launch linkx_bringup teleop.launch.py
 | `/robot_buttons` | `std_msgs/UInt16` | `remote_node_cpp` | `chassis_relay`、可选云台 relay |
 | `/chassis/buttons` | `std_msgs/UInt16` | `chassis_relay` | 主控按键入口 |
 | `/chassis/odom_twist` | `geometry_msgs/Twist` | `r2_vehicle_bridge` | 底盘实际速度反馈 |
-| `/IMU_data` | `sensor_msgs/Imu` | `hipnuc_imu/talker` | 主控 IMU 航向保持 |
+| `/IMU_data` | `sensor_msgs/Imu` | `hipnuc_imu/hipnuc_imu_node` | 主控 IMU 航向保持 |
 | `/gimbal/cmd_vel` | `geometry_msgs/Twist` | `gimbal_relay` | 可选云台入口 |
 | `/gimbal/buttons` | `std_msgs/UInt16` | `gimbal_relay` | 可选云台入口 |
 
@@ -239,7 +240,7 @@ ros2 service call /vehicle/disable std_srvs/srv/Trigger {}
 
 ## HiPNUC IMU
 
-`full_system.launch.py` 默认启动 `hipnuc_imu/talker`，配置文件为 `src/hipnuc_imu/config/hipnuc_config.yaml`。
+`full_system.launch.py` 默认启动 `hipnuc_imu/hipnuc_imu_node`，配置文件为 `src/hipnuc_imu/config/hipnuc_config.yaml`。
 
 默认参数：
 
@@ -255,50 +256,42 @@ ros2 service call /vehicle/disable std_srvs/srv/Trigger {}
 单独启动：
 
 ```bash
-ros2 launch hipnuc_imu imu_spec_msg.launch.py
+ros2 launch hipnuc_imu hipnuc_imu.launch.py
 ros2 topic echo /IMU_data
 ```
 
-`hipnuc_imu` 还安装 `listener` 示例节点；`hipnuc_lib_package` 提供底层协议解析共享库。
+`hipnuc_imu` 还安装 `hipnuc_imu_listener` 示例节点（订阅并打印 IMU 消息）；`hipnuc_lib_package` 提供底层协议解析共享库。
 
 ## ToF 测距
 
-`tof` 包提供 `can_link_test` 和 `up_range_subscriber`：
+ToF 已并入 `linkx_soem_demo`：主控进程内直接配置 LinkX-4C 从站并解析 TFmini-S 帧，以 `sensor_msgs/Range`（SensorData QoS）发布 12 路话题：
 
 ```bash
-ros2 launch tof radar_launch.py ifname:=enp4s0 can_baud:=1M slave_high:=1 slave_low:=0
+# 12 路 Range 话题实时可视化（前/后/左/右各左右两路 + 上/下各两路）
+python3 scripts/watch_tof_ranges.py
 
-# 不启动四路 up/down 订阅打印节点
-ros2 launch tof radar_launch.py ifname:=enp4s0 start_up_range_subscriber:=false
-
-# 直接运行：网卡 波特率 高频从站 低频从站
-ros2 run tof can_link_test enp4s0 1M 1 0
+# 直接监控 CAN 上的 TFmini-S 原始帧（建议显式指定网卡）
+sudo IFNAME=enp4s0 ros2 run linkx_soem_demo tfmini_s_can_read --ifname enp4s0
 ```
 
-`radar_launch.py` 参数：
+`tfmini_s_can_read` 常用参数：`--ifname <网卡>`（默认取 `IFNAME` 环境变量或 `enp4s0`）、`--duration <秒>`（`0` 表示持续运行）；其余参数（`--can-rate`、`--print-raw` 等）见工具 `--help` 输出。
 
-| 参数 | 默认值 | 说明 |
-| --- | --- | --- |
-| `ifname` | `enp86s0` | EtherCAT 网卡 |
-| `can_baud` | `1M` | CAN 波特率，支持 `1M`、`500k`、`250k` |
-| `slave_high` | `1` | 高频 TFmini-S 所在 LinkX-4C 从站 ID |
-| `slave_low` | `0` | 低频传感器从站 ID，`0` 表示禁用 |
-| `start_up_range_subscriber` | `true` | 是否启动四路上/下高频测距订阅打印 |
-
-主要 Range 话题：
+主控发布的 Range 话题：
 
 | 话题 | 说明 |
 | --- | --- |
-| `/high/front/range`、`/high/left/range`、`/high/right/range`、`/high/back/range` | 高频前/左/右/后 |
+| `/high/front_left/range`、`/high/front_right/range` | 高频前左/前右 |
+| `/high/left_left/range`、`/high/left_right/range` | 高频左前/左后 |
+| `/high/right_left/range`、`/high/right_right/range` | 高频右前/右后 |
+| `/high/back_left/range`、`/high/back_right/range` | 高频后左/后右 |
 | `/high/up_front/range`、`/high/up_back/range` | 高频上前/上后 |
 | `/high/down_front/range`、`/high/down_back/range` | 高频下前/下后 |
-| `/low/front/range`、`/low/left/range`、`/low/right/range`、`/low/back/range` | 低频前/左/右/后 |
 
-更详细的 ToF CAN ID、帧格式和解析逻辑见 `src/tof/README.md`。
+ToF CAN ID、帧格式和解析逻辑见 `src/linkx_soem_demo/src/tof/tfmini_s_range_publisher.cpp`。
 
 ## 可执行文件
 
-`linkx_soem_demo` 安装的主要可执行：
+`linkx_soem_demo` 安装的主要可执行（联调工具源码位于 `src/linkx_soem_demo/src/tools/`）：
 
 | 可执行 | 作用 |
 | --- | --- |
@@ -308,12 +301,15 @@ ros2 run tof can_link_test enp4s0 1M 1 0
 | `dm_motor_param_calib` | DM 电机参数标定工具 |
 | `omni_motion_record` | 全向底盘运动记录工具 |
 | `omni_accel_response` | 全向底盘加速度响应测试 |
+| `remote_chassis_yaw_tune` | 遥控底盘偏航角调参工具 |
 | `imu_heading_hold_sweep` | IMU 航向保持参数扫描 |
 | `lift_3519_feedback` | 升降 3519 反馈测试 |
+| `lift_3519_readonly` | 升降 3519 只读反馈诊断（不发送控制帧） |
 | `lift_raise_drive_test` | 升降驱动测试 |
 | `lift_tof_trigger_test` | 升降 ToF 触发测试 |
+| `tfmini_s_can_read` | TFmini-S CAN 原始帧监控工具 |
 
-额外测试工具大多需要真实硬件、正确网卡和 raw socket 权限。运行前先查看对应 `src/extra_tests/*_main.cpp` 文件头部用法。
+联调工具大多需要真实硬件、正确网卡和 raw socket 权限。运行前先查看对应 `src/tools/*_main.cpp` 文件头部用法。
 
 ## EtherCAT 说明
 
@@ -321,7 +317,7 @@ ros2 run tof can_link_test enp4s0 1M 1 0
 
 | 概念 | 项目内含义 |
 | --- | --- |
-| Master | 上位机 `linkx_soem_demo` / `tof can_link_test` |
+| Master | 上位机 `linkx_soem_demo`（联调工具如 `tfmini_s_can_read` 也是 EtherCAT 主站） |
 | Slave | LinkX-4C |
 | PDO | 周期过程数据，用于 CAN 桥接收发 |
 | SDO | 非周期参数读写和诊断 |

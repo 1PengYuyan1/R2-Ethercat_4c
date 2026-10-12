@@ -11,8 +11,8 @@
 //      small-step wheel_feedforward_scale suggestions.
 //
 // Usage:
-//   sudo IFNAME=enp86s0 ros2 run linkx_soem_demo omni_accel_response
-//   sudo IFNAME=enp86s0 ./install/linkx_soem_demo/lib/linkx_soem_demo/omni_accel_response \
+//   sudo IFNAME=enp4s0 ros2 run linkx_soem_demo omni_accel_response
+//   sudo IFNAME=enp4s0 ./install/linkx_soem_demo/lib/linkx_soem_demo/omni_accel_response \
 //        --speeds 10,30,60 --duration 2.5 --settle 1.0 --reach-frac 0.95
 //
 // Output:
@@ -69,7 +69,7 @@ std::atomic<bool> st_running {true};
 
 struct Options
 {
-    std::string ifname = "enp86s0";
+    std::string ifname = "enp4s0";
     std::vector<float> speeds_rad_s {10.0f, 30.0f, 60.0f};
     float direction = 1.0f;
     float duration_s = 2.5f;
@@ -309,9 +309,9 @@ void print_usage(const char *argv0)
 {
     std::cerr
         << "Usage:\n"
-        << "  sudo IFNAME=enp86s0 " << argv0 << " [options]\n\n"
+        << "  sudo IFNAME=enp4s0 " << argv0 << " [options]\n\n"
         << "Options:\n"
-        << "  --ifname IFACE        EtherCAT NIC, default IFNAME env or enp86s0\n"
+        << "  --ifname IFACE        EtherCAT NIC, default IFNAME env or enp4s0\n"
         << "  --speeds LIST         target wheel speeds rad/s, default 10,30,60\n"
         << "  --direction 1|-1      command direction, default 1\n"
         << "  --duration SEC        max duration per step, default 2.5\n"

@@ -8,20 +8,20 @@ def generate_launch_description():
     config = os.path.join(
         get_package_share_directory('hipnuc_imu'),
         'config',
-        'hipnuc_config.yaml',
-    ),
+        'hipnuc_config.yaml'
+    )
 
     return LaunchDescription([
          Node(
             package='hipnuc_imu',
-            executable='talker',
+            executable='hipnuc_imu_node',
             name='IMU_publisher',
             parameters=[config],
             output='screen',
             ),
         Node(
             package='hipnuc_imu',
-            executable='listener',
+            executable='hipnuc_imu_listener',
             output='screen'
             ),
         ])
