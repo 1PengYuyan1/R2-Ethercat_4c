@@ -10,6 +10,15 @@
 
 > 网卡默认值已统一为 `enp4s0`：`start_upper_computer.sh`、`full_system.launch.py`、主控及各工具一致；优先级为 `--ifname` > `IFNAME` 环境变量 > `enp4s0`。换机器或换网口时建议显式指定。
 
+## 文档导航
+
+| 文档 | 内容 |
+| --- | --- |
+| `README.md`（本文件） | 快速上手：依赖、构建、启动、话题与服务速查 |
+| `docs/ARCHITECTURE.md` | 系统架构、包划分、`linkx_soem_demo` 内部分层、目录与命名规则、静态校验项 |
+| `docs/MAINTENANCE.md` | 维护指南：改动流程、历史改名记录、CI 说明、许可与元数据维护 |
+| `LICENSE` / `THIRD_PARTY_NOTICES.md` | 许可声明与第三方组件（SOEM、HiPNUC、RoboWalker）清单 |
+
 ## 系统架构
 
 ```text
@@ -50,8 +59,13 @@ SOEM EtherCAT Master -> LinkX-4C -> CAN0~CAN3 -> 全向轮/升降/夹爪/ToF
 ```text
 .
 ├── README.md
+├── LICENSE                            # 专有许可声明（第三方组件例外见 THIRD_PARTY_NOTICES.md）
+├── THIRD_PARTY_NOTICES.md             # 第三方组件版权与许可清单
 ├── start_upper_computer.sh
+├── .github/workflows/ci.yml           # 布局校验 + ros:humble 构建
+├── docs/                              # ARCHITECTURE.md / MAINTENANCE.md
 ├── scripts/
+│   ├── check_repo_layout.py           # 只读布局与引用校验（本地与 CI 共用）
 │   └── watch_tof_ranges.py            # ToF 话题实时监控脚本
 └── src/
     ├── linkx_soem_demo/
@@ -93,6 +107,12 @@ sudo apt install -y ros-humble-joy
 source /opt/ros/humble/setup.bash
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
+```
+
+提交前可先运行只读布局校验（不需要 ROS，也不需要硬件），CI 也会执行同一条命令：
+
+```bash
+python3 scripts/check_repo_layout.py .
 ```
 
 一键脚本会自动执行 Release 构建，并在检测到陈旧 CMake cache 时清理 package cache：

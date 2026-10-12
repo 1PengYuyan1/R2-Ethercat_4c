@@ -1,0 +1,48 @@
+# 专有许可声明 (Proprietary License)
+
+**R2 EtherCAT 上位机控制栈（R2-Ethercat_4c）**
+
+Copyright (c) 2026 1PengYuyan1 — https://github.com/1PengYuyan1
+
+保留所有权利 / All rights reserved.
+
+## 1. 适用范围
+
+除第 3 节列出的第三方组件外，本仓库中的源代码、脚本、文档及其他材料（以下统称「本软件」）
+的著作权归版权所有者所有。本仓库未选择任何开源许可，默认按专有软件（proprietary）处理。
+
+## 2. 授权与限制
+
+未经版权所有者事先书面许可，任何个人或组织不得：
+
+- 复制、发布、公开传播、镜像或以其他方式向第三方提供本软件及其衍生作品；
+- 修改、翻译或以本软件为基础创作衍生作品（第 3 节第三方组件除外）；
+- 将本软件或其衍生作品用于商业销售、商业服务或其他营利目的；
+- 删除或修改本软件中的版权声明、许可声明或其他权利标识。
+
+仓库访问者可以在自己的 R2 机器人平台上编译、运行、调试和维护本软件，用于非商业性的
+研发、教学与内部测试活动。
+
+## 3. 第三方组件（不适用上述专有条款）
+
+| 组件 | 位置 | 许可 |
+| --- | --- | --- |
+| HiPNUC 解码库与 IMU 驱动 | `src/hipnuc_lib_package/`、`src/hipnuc_imu/` | Apache License 2.0 |
+| SOEM（Simple Open EtherCAT Master） | `src/linkx_soem_demo/include/linkx_soem_demo/vehicle_control/1_Middleware/soem/`、`src/linkx_soem_demo/src/vehicle_control/1_Middleware/soem/` | 上游 GPLv3 / 商业双重许可 |
+| USTC-RoboWalker 相关算法文件 | `src/linkx_soem_demo/**/1_Middleware/algorithm/alg_pid.*` | 按上游项目声明 |
+
+完整清单、上游版权与许可链接见 `THIRD_PARTY_NOTICES.md`。
+若某个文件自带版权头或 SPDX 标识，以该文件头声明为准。
+
+## 4. 免责声明 (Disclaimer of Warranty)
+
+本软件按「现状」提供，不附带任何明示或暗示的担保，包括但不限于适销性、特定用途适用性
+和非侵权担保。在任何情况下，版权所有者均不对因使用或无法使用本软件而产生的任何索赔、
+损害或其他责任负责。
+
+本软件用于真实机器人硬件（底盘、升降、夹爪、EtherCAT 主站、CAN 总线）联调，存在机械
+伤害与设备损坏风险，使用者需自行评估风险并采取安全措施。
+
+## 5. 联系
+
+如需商业授权、二次分发授权或其他授权，请通过仓库 Issues 联系仓库所有者。

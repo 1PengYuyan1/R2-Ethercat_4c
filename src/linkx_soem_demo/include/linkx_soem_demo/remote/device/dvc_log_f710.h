@@ -1,5 +1,5 @@
-#ifndef DVC_LOGF710_H
-#define DVC_LOGF710_H
+#ifndef DVC_LOG_F710_H
+#define DVC_LOG_F710_H
 
 #include <cstdint>
 #include <vector>

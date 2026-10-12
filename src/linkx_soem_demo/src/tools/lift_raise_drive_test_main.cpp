@@ -47,7 +47,7 @@
 #include "dvc_motor_dm.h"
 #include "ecat_manager.h"
 #include "linkx4c_handler.h"
-#include "math.h"
+#include "r2_math.h"
 
 namespace
 {

@@ -1,4 +1,4 @@
-#include "linkx_soem_demo/remote/device/dvc_logF710.h"
+#include "linkx_soem_demo/remote/device/dvc_log_f710.h"
 
 #include <cmath>
 

@@ -12,7 +12,7 @@
 #include "crt_lift.h"
 #include "dvc_motor_dm.h"
 #include "imu_heading_hold/imu_heading_hold.h"
-#include "linkx_soem_demo/remote/device/dvc_logF710.h"
+#include "linkx_soem_demo/remote/device/dvc_log_f710.h"
 
 #include <atomic>
 #include <chrono>

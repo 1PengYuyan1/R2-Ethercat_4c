@@ -53,7 +53,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 
-#include "math.h"
+#include "r2_math.h"
 
 // ============================================================================
 //   全局对象 —— 与 main.cpp 共享（main.cpp 通过 extern 引用 master.is_running）

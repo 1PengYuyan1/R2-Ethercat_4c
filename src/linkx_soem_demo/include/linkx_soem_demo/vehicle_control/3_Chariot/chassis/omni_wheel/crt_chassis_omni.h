@@ -3,7 +3,7 @@
 
 #include "dvc_motor_dm.h"
 
-#include "math.h"
+#include "r2_math.h"
 #include <cmath>
 
 #define OMNI_WHEEL_NUM 4

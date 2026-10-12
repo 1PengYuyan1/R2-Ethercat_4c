@@ -2,7 +2,7 @@
 #define JOYSTICK_MAPPER_HPP
 
 #include <vector>
-#include "linkx_soem_demo/remote/device/dvc_logF710.h"
+#include "linkx_soem_demo/remote/device/dvc_log_f710.h"
 #include "linkx_soem_demo/remote/ros2/robot_types.hpp"
 
 class JoystickMapper {

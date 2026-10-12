@@ -25,7 +25,7 @@ extern "C" {
 #include "stdbool.h"
 #include "stdlib.h"
 #include "string.h"
-#include "math.h"
+#include "r2_math.h"
 
 /* Exported types ------------------------------------------------------------*/
 /**

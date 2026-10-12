@@ -1,6 +1,6 @@
 #include "crt_lift.h"
 
-#include "math.h"
+#include "r2_math.h"
 
 #include <cmath>
 #include <limits>

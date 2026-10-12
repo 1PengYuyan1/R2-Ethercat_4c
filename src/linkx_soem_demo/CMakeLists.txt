@@ -129,7 +129,7 @@ ament_target_dependencies(${PROJECT_NAME}
 add_executable(remote_node_cpp
     src/remote/ros2/remote_node.cpp
     src/remote/ros2/joystick_mapper.cpp
-    src/remote/device/dvc_logF710.cpp
+    src/remote/device/dvc_log_f710.cpp
 )
 target_include_directories(remote_node_cpp PRIVATE ${PROJECT_INCLUDE_DIRS})
 ament_target_dependencies(remote_node_cpp

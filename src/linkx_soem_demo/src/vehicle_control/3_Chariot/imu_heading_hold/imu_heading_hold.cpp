@@ -1,6 +1,6 @@
 #include "imu_heading_hold/imu_heading_hold.h"
 
-#include "math.h"
+#include "r2_math.h"
 
 #include <algorithm>
 #include <chrono>

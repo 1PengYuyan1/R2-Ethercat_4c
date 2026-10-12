@@ -1,5 +1,8 @@
-#ifndef LINKX_R2_PROJECT_MATH_H
-#define LINKX_R2_PROJECT_MATH_H
+// Project-local R2 math helpers.
+// Named r2_math.h (not math.h) so it never shadows the C library <math.h>
+// on case-insensitive/quoted-include search paths.
+#ifndef LINKX_R2_PROJECT_R2_MATH_H
+#define LINKX_R2_PROJECT_R2_MATH_H
 
 #ifdef __cplusplus
 #include <cstdint>

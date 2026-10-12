@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  layout:
+    name: Layout & reference check
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run layout checker
+        run: python3 scripts/check_repo_layout.py .
+
+  build:
+    name: colcon build (ROS 2 Humble)
+    runs-on: ubuntu-22.04
+    container: ros:humble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            python3-colcon-common-extensions \
+            ros-humble-joy \
+            ros-humble-launch \
+            ros-humble-launch-ros \
+            ros-humble-rclcpp \
+            ros-humble-std-msgs \
+            ros-humble-sensor-msgs \
+            ros-humble-geometry-msgs \
+            ros-humble-std-srvs \
+            ros-humble-rcl-interfaces \
+            ros-humble-ament-lint-auto \
+            ros-humble-ament-lint-common
+      - name: Layout checker (fail fast)
+        run: |
+          source /opt/ros/humble/setup.bash
+          python3 scripts/check_repo_layout.py .
+      - name: Build workspace
+        run: |
+          source /opt/ros/humble/setup.bash
+          colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release

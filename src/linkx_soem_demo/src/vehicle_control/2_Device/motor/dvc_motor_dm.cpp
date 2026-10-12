@@ -2,7 +2,7 @@
 // Created by pzx on 2025/12/15.
 //
 #include "dvc_motor_dm.h"
-#include "math.h"
+#include "r2_math.h"
 
 uint8_t DM_Motor_CAN_Message_Clear_Error[8] = {
 0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xfb

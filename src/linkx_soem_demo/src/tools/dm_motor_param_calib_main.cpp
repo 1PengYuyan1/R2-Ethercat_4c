@@ -52,7 +52,7 @@
 #include "linkx4c_handler.h"
 #include "crt_chassis_omni.h"
 #include "dvc_motor_dm.h"
-#include "math.h"
+#include "r2_math.h"
 
 namespace
 {

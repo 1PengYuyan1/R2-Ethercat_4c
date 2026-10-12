@@ -1,7 +1,7 @@
 #include "task_terminal_diagnostics.h"
 
 #include "can_terminal_printer.h"
-#include "math.h"
+#include "r2_math.h"
 #include "robot.h"
 
 #include <cmath>
